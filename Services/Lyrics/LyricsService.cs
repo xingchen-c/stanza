@@ -40,12 +40,19 @@ public sealed class LyricsService
             return cached.Status;
         }
 
+        // 总预算 8 秒：Lyricify 的 QQ 接口偶发挂起（默认 HttpClient 超时可达 100s），
+        // 不能让卡死的请求把整条切歌流程拖住，超时即视为"未找到"，交给上层重试。
+        var deadline = Task.Delay(TimeSpan.FromSeconds(8));
         foreach (var provider in _providers)
         {
             LyricsResult result;
             try
             {
-                result = await provider.LoadAsync(title, artist, durationMs);
+                var loadTask = provider.LoadAsync(title, artist, durationMs);
+                var completed = await Task.WhenAny(loadTask, deadline);
+                if (completed != loadTask)
+                    break; // 总超时：该源（及后续源）本轮不再等待，直接返回 NotFound
+                result = await loadTask;
             }
             catch
             {

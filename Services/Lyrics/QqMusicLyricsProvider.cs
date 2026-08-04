@@ -30,32 +30,21 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
             if (searchResult is not QQMusicSearchResult qq)
                 return new LyricsResult(LyricsLoadResult.NotFound, []);
 
-            // 2. 用歌曲 Id 获取解密后的 QRC 歌词文本
+            Debug.WriteLine($"[FluentLyrics] QQ 搜索命中: '{qq.Title}' / {string.Join(", ", qq.Artists ?? [])} / 专辑='{qq.Album}' / 时长={qq.DurationMs?.ToString() ?? "?"}ms / MatchType={qq.MatchType}");
+
+            // 2. 用歌曲 Id 获取解密后的歌词文本
             var response = await ProviderHelper.QQMusicApi.GetLyricsAsync(qq.Id);
             var rawLyrics = response?.Lyrics;
 
             // 搜到了歌但歌词内容为空：QQ 音乐对纯音乐就是这种表现，按纯音乐处理
             if (string.IsNullOrWhiteSpace(rawLyrics))
             {
-                Debug.WriteLine("[FluentLyrics] 歌词内容为空，按纯音乐处理");
+                Debug.WriteLine($"[FluentLyrics] 歌词内容为空（歌曲 '{qq.Title}'），按纯音乐处理");
                 return new LyricsResult(LyricsLoadResult.Instrumental, []);
             }
 
-            // 3. 解析成带时间轴的行（必须显式指定 Qrc 类型）
-            var data = ParseHelper.ParseLyrics(rawLyrics, LyricsRawTypes.Qrc);
-
-            var parsed = new List<LyricLine>();
-            if (data?.Lines is not null)
-            {
-                foreach (var line in data.Lines)
-                {
-                    if (!TryGetTiming(line, out var startTime, out var text, out var endTime))
-                        continue;
-                    parsed.Add(new LyricLine(startTime, text, endTime));
-                }
-
-                parsed.Sort((a, b) => a.StartTime.CompareTo(b.StartTime));
-            }
+            // 3. 解析成带时间轴的行：绝大多数是 Qrc，个别歌曲返回 Lrc，两种都试
+            var parsed = ParseTimedLines(rawLyrics);
 
             // 4. 解析翻译（Trans 与正词同时间轴，按开始时间对齐挂到对应行）
             var translationMap = BuildTranslationMap(response?.Trans);
@@ -78,14 +67,83 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
             if (parsed.Count > 0)
                 return new LyricsResult(LyricsLoadResult.Loaded, parsed);
 
-            // 有返回内容但解析不出任何时间轴行：多半是纯音乐占位文案，打日志确认服务端原文
-            Debug.WriteLine($"[FluentLyrics] 无时间轴歌词（疑似纯音乐），服务端原文: {rawLyrics}");
+            // 有返回内容但解析不出任何时间轴行：
+            // 1) 内容带时间戳标记却解析失败 → 可能是未知格式，按 NotFound 交给兜底源（LRCLIB），不误判纯音乐；
+            // 2) 否则多半是纯音乐占位文案 → 按纯音乐处理。
+            if (LooksLikeTimedLyrics(rawLyrics))
+            {
+                Debug.WriteLine($"[FluentLyrics] 歌词含时间戳但解析失败（未知格式），原文前 200 字: {TruncateForLog(rawLyrics)}");
+                return new LyricsResult(LyricsLoadResult.NotFound, []);
+            }
+
+            Debug.WriteLine($"[FluentLyrics] 无时间轴歌词（疑似纯音乐），服务端原文: {TruncateForLog(rawLyrics)}");
             return new LyricsResult(LyricsLoadResult.Instrumental, []);
         }
         catch
         {
             return new LyricsResult(LyricsLoadResult.NotFound, []);
         }
+    }
+
+    /// <summary>把歌词原文按 Qrc/Lrc 两种格式尝试解析，返回带时间轴的行（已按开始时间排序）；解析不出则返回空列表</summary>
+    private static List<LyricLine> ParseTimedLines(string rawLyrics)
+    {
+        var parsed = new List<LyricLine>();
+        foreach (var rawType in new[] { LyricsRawTypes.Qrc, LyricsRawTypes.Lrc })
+        {
+            try
+            {
+                var data = ParseHelper.ParseLyrics(rawLyrics, rawType);
+                parsed = new List<LyricLine>();
+                if (data?.Lines is not null)
+                {
+                    foreach (var line in data.Lines)
+                    {
+                        if (!TryGetTiming(line, out var startTime, out var text, out var endTime))
+                            continue;
+                        parsed.Add(new LyricLine(startTime, text, endTime));
+                    }
+                }
+
+                parsed.Sort((a, b) => a.StartTime.CompareTo(b.StartTime));
+                if (parsed.Count > 0)
+                    return parsed;
+            }
+            catch
+            {
+                // 该格式解析失败就试下一种
+            }
+        }
+
+        return parsed;
+    }
+
+    /// <summary>原文是否带时间戳标记（[mm:ss] 等），用于区分"解析失败"与"纯音乐占位文案"</summary>
+    private static bool LooksLikeTimedLyrics(string rawLyrics)
+    {
+        foreach (var line in rawLyrics.Split('\n'))
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Length < 4 || trimmed[0] != '[')
+                continue;
+
+            var close = trimmed.IndexOf(']');
+            if (close <= 1)
+                continue;
+
+            var tag = trimmed[1..close];
+            var parts = tag.Split(':');
+            if (parts.Length >= 2 && int.TryParse(parts[0], out _))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>日志原文截断，避免刷屏</summary>
+    private static string TruncateForLog(string text)
+    {
+        return text.Length <= 200 ? text : text[..200] + $"…（共 {text.Length} 字符）";
     }
 
     /// <summary>安全读取一行的开始时间与文本（跳过空行、纯伴奏行等异常行）</summary>
@@ -125,15 +183,16 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
                 var data = ParseHelper.ParseLyrics(transRaw, rawType);
                 if (data?.Lines is not null)
                 {
-                    foreach (var line in data.Lines)
+                foreach (var line in data.Lines)
+                {
+                    if (TryGetTiming(line, out var start, out var text, out _) &&
+                        !string.IsNullOrWhiteSpace(text) &&
+                        !IsPlaceholderTranslation(text) &&
+                        !map.ContainsKey(start))
                     {
-                        if (TryGetTiming(line, out var start, out var text, out _) &&
-                            !string.IsNullOrWhiteSpace(text) &&
-                            !map.ContainsKey(start))
-                        {
-                            map[start] = text;
-                        }
+                        map[start] = text;
                     }
+                }
                 }
             }
             catch
@@ -146,6 +205,12 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
         }
 
         return map;
+    }
+
+    /// <summary>QQ 翻译里的占位符（"//" 表示该行无翻译），不能当真实翻译挂到歌词行上</summary>
+    private static bool IsPlaceholderTranslation(string text)
+    {
+        return string.Equals(text.Trim(), "//", StringComparison.Ordinal);
     }
 
     /// <summary>按开始时间匹配翻译：先精确，再 ±300ms 内取最近</summary>

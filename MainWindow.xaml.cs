@@ -41,6 +41,10 @@ public partial class MainWindow
     private bool _switchingTrack;                                 // 正在切歌/等待新歌词
     private string _switchKey = string.Empty;                     // 触发切歌检测时的歌曲 key
     private int _switchStartedAt;                                 // 切歌检测触发时间（误判恢复用）
+    private bool _switchSuspected;                                // 位置回退疑似切歌，等待 key 确认（区分拖动进度条）
+    private bool _lyricsRetryPending;                             // 是否已有"未找到歌词"延迟重试在跑
+    private string _marqueeSignature = string.Empty;              // 上次跑马灯签名（文本+距离+时长），避免重复重启
+    private string _reapplyDiagSig = string.Empty;                // 布局诊断签名（仅变化时打印，防刷屏）
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtr")]
     private static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
@@ -167,10 +171,10 @@ public partial class MainWindow
             Top = taskbarRect.Top;
             Width = cardWidth;
             Height = cardHeight;
+            ReapplyLyricDisplay(); // 尺寸变化才重新应用布局；无变化时保持跑马灯继续滚动，不打断
         }
 
         ShowCardIfReady();
-        ReapplyLyricDisplay();
     }
 
     /// <summary>是否因播放状态而需要隐藏卡片；无会话或查询失败时不隐藏</summary>
@@ -298,6 +302,7 @@ public partial class MainWindow
         _lastTickPositionMs = -1;
         _lastEndTimeMs = -1;
         _switchingTrack = false;
+        _switchSuspected = false;
 
         if (_session is null)
         {
@@ -341,8 +346,20 @@ public partial class MainWindow
         try
         {
             var props = await session.TryGetMediaPropertiesAsync();
-            var title = string.IsNullOrWhiteSpace(props.Title) ? "未知歌曲" : props.Title;
-            var artist = string.IsNullOrWhiteSpace(props.Artist) ? "未知歌手" : props.Artist;
+
+            // 切歌瞬间 SMTC 元数据可能短暂为空：不能把空值当成"未知歌曲"去搜索，
+            // 否则会污染当前歌曲 key，并让轮询误以为"新歌已确认"而提前终止。
+            // 这里只等待，不更新任何状态，由轮询/后续事件重读。
+            if (string.IsNullOrWhiteSpace(props.Title))
+            {
+                Debug.WriteLine("[FluentLyrics] 元数据未就绪（空标题），等待轮询重读");
+                if (!_switchingTrack)
+                    BeginTrackSwitch("元数据未就绪"); // 顺带启动元数据轮询，等真实歌名出现
+                return;
+            }
+
+            var title = props.Title;
+            var artist = props.Artist ?? string.Empty;
 
             var key = $"{title}\u0001{artist}";
             if (key == _currentKey)
@@ -353,6 +370,7 @@ public partial class MainWindow
             _currentIndex = -1;
             _lastProgress = -1;
             SetStatus("正在获取歌词…");
+            Debug.WriteLine($"[FluentLyrics] 开始加载歌词: {title} / {artist}");
 
             // 时长尽量带上，能提高 QQ 搜索的匹配准确度；拿不到也没关系
             int? durationMs = null;
@@ -373,19 +391,65 @@ public partial class MainWindow
             if (key != _currentKey)
                 return;
 
+            Debug.WriteLine($"[FluentLyrics] 歌词加载完成: {result}");
             _switchingTrack = false;
             _currentIndex = -1;
             _lastProgress = -1;
-            SetStatus(result switch
-            {
-                LyricsLoadResult.Loaded => string.Empty,
-                LyricsLoadResult.Instrumental => "此歌曲为没有填词的纯音乐，请您欣赏",
-                _ => "未找到歌词",
-            });
+            SetStatus(StatusTextFor(result));
+
+            // 偶发：切歌瞬间搜索失败 / QQ 接口限流。NotFound 不缓存，延迟重试一次，
+            // 避免"未找到歌词"被定死整首歌（重试期间已有占位文本，无闪烁）。
+            if (result == LyricsLoadResult.NotFound)
+                RetryLoadLyricsAsync(key, title, artist, durationMs);
         }
         catch (Exception ex)
         {
             SetStatus($"读取媒体信息失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>歌词加载结果的占位文案</summary>
+    private static string StatusTextFor(LyricsLoadResult result) => result switch
+    {
+        LyricsLoadResult.Loaded => string.Empty,
+        LyricsLoadResult.Instrumental => "此歌曲为没有填词的纯音乐，请您欣赏",
+        _ => "未找到歌词",
+    };
+
+    /// <summary>
+    /// "未找到歌词"的延迟重试：切歌瞬间 QQ 搜索偶发失败（元数据刚就绪 / 接口限流），
+    /// 1.2 秒后重试一次；期间保持"未找到歌词"占位，重试成功会直接刷新显示。
+    /// </summary>
+    private async void RetryLoadLyricsAsync(string key, string title, string artist, int? durationMs)
+    {
+        if (_lyricsRetryPending)
+            return;
+        _lyricsRetryPending = true;
+
+        try
+        {
+            Debug.WriteLine($"[FluentLyrics] NotFound 延迟重试启动: {title} / {artist}");
+            await Task.Delay(1200);
+            if (key != _currentKey || _session is null)
+                return; // 已切到别的歌 / 会话关闭，放弃本次重试
+
+            var result = await _lyrics.LoadAsync(title, artist, durationMs);
+            if (key != _currentKey)
+                return; // 等待期间又切歌，旧结果丢弃
+
+            Debug.WriteLine($"[FluentLyrics] NotFound 重试结果: {result}");
+            _switchingTrack = false;
+            _currentIndex = -1;
+            _lastProgress = -1;
+            SetStatus(StatusTextFor(result));
+        }
+        catch
+        {
+            // 重试失败保持现状（"未找到歌词"），不影响事件驱动路径
+        }
+        finally
+        {
+            _lyricsRetryPending = false;
         }
     }
 
@@ -395,15 +459,83 @@ public partial class MainWindow
     }
 
     /// <summary>进入"等待新歌"状态：清显示、记录触发点，并主动轮询媒体属性（MediaPropertiesChanged 可能滞后）</summary>
-    private void BeginTrackSwitch()
+    private void BeginTrackSwitch(string reason)
     {
+        _switchSuspected = false;
         _switchingTrack = true;
         _switchKey = _currentKey;
         _switchStartedAt = Environment.TickCount;
         _currentIndex = -1;
         _lastProgress = -1;
         SetStatus("正在获取歌词…");
+        Debug.WriteLine($"[FluentLyrics] 切歌信号触发（{reason}），等待新歌 key='{_switchKey}'");
         PollForNewTrackAsync();
+    }
+
+    /// <summary>
+    /// 播放位置大幅回退但时长未变：可能是真切歌（两首歌同时长），也可能是向后拖动进度条。
+    /// 不立即清显示/显示"正在获取歌词…"，先静默轮询确认歌曲 key 真的变化（且连续两次稳定）再切换，
+    /// 避免拖进度条时闪"正在获取歌词…"或触发多余的歌词请求。
+    /// </summary>
+    private void SuspectTrackSwitch()
+    {
+        if (_switchSuspected)
+            return;
+        _switchSuspected = true;
+        Debug.WriteLine("[FluentLyrics] 位置回退疑似切歌，等待确认（区分拖动进度条）");
+        PollForTrackConfirmationAsync();
+    }
+
+    /// <summary>疑似切歌确认：连续两次读到同一个新 key 才算确认，之后走完整切换流程；否则静默作罢</summary>
+    private async void PollForTrackConfirmationAsync()
+    {
+        try
+        {
+            string? candidateKey = null;
+            for (var i = 0; i < 10; i++) // 最多 2 秒
+            {
+                await Task.Delay(200);
+                if (!_switchSuspected || _session is null || _switchingTrack)
+                    return; // 怀疑被取消 / 会话关闭 / 已被时长变化路径接管
+
+                string? currentKey = null;
+                try
+                {
+                    var props = await _session.TryGetMediaPropertiesAsync();
+                    if (!string.IsNullOrWhiteSpace(props.Title))
+                        currentKey = $"{props.Title}\u0001{props.Artist ?? string.Empty}";
+                }
+                catch
+                {
+                    // 读取失败继续等下一轮
+                }
+
+                if (currentKey is null || currentKey == _currentKey)
+                {
+                    candidateKey = null; // 元数据未就绪 / 仍是旧歌 → 重置候选
+                    continue;
+                }
+
+                if (candidateKey == currentKey)
+                {
+                    // 同一个新 key 连续两次读到 → 确认切歌，走完整流程
+                    Debug.WriteLine("[FluentLyrics] 位置回退确认切歌，进入切换流程");
+                    _switchSuspected = false;
+                    await RefreshTrackAsync();
+                    return;
+                }
+
+                candidateKey = currentKey;
+            }
+        }
+        catch
+        {
+            // 确认失败不影响事件驱动路径
+        }
+        finally
+        {
+            _switchSuspected = false;
+        }
     }
 
     /// <summary>
@@ -414,13 +546,20 @@ public partial class MainWindow
     {
         try
         {
-            for (var i = 0; i < 15; i++)
+            for (var i = 0; i < 20; i++)
             {
                 await Task.Delay(200);
-                if (!_switchingTrack || _currentKey != _switchKey || _session is null)
-                    return; // 新歌已确认 / 误判已恢复 / 会话关闭
+                // 不再以"key 已变化"作为退出条件：空元数据会误报"新歌已确认"导致轮询提前终止。
+                // 统一等到歌词加载完成（_switchingTrack 复位）或超时。
+                if (!_switchingTrack || _session is null)
+                {
+                    Debug.WriteLine($"[FluentLyrics] 元数据轮询结束（i={i}），switching={_switchingTrack}");
+                    return; // 歌词已加载 / 误判已恢复 / 会话关闭
+                }
                 await RefreshTrackAsync();
             }
+
+            Debug.WriteLine("[FluentLyrics] 元数据轮询 4s 超时，交由 ticker 看门狗接管");
         }
         catch
         {
@@ -453,7 +592,7 @@ public partial class MainWindow
 
             // 前后都有有效时长且明显不同 → 切歌早期信号
             if (_lastEndTimeMs > 0 && endMs > 0 && Math.Abs(endMs - _lastEndTimeMs) > 500 && !_switchingTrack)
-                BeginTrackSwitch();
+                BeginTrackSwitch("时长变化");
 
             if (endMs > 0)
                 _lastEndTimeMs = endMs;
@@ -493,7 +632,8 @@ public partial class MainWindow
         }
 
         // 切歌检测（用原始位置，避免 LastUpdatedTime 滞后把位置外推虚高而漏检）：
-        // 信号1：播放中位置大幅回退（>2s）→ 典型切歌行为。
+        // 信号1：播放中位置大幅回退（>2s）→ 典型切歌行为；
+        // 但向后拖动进度条也会大幅回退，所以只进入"怀疑"状态，确认 key 变了才真正切歌。
         // 注意：不要按"位置超出歌词末尾"判切歌——尾奏（最后一句唱完到歌曲结束）期间
         // 位置必然超出歌词末尾，会误判；"切歌但位置未回退"由 EndTime 变化信号覆盖。
         var jumpedBack = _lastTickPositionMs >= 0 && rawPositionMs < _lastTickPositionMs - 2000;
@@ -501,22 +641,39 @@ public partial class MainWindow
         // 已在等待新歌时不重复进入：否则每拍都重置恢复计时，误判兜底永远触发不了
         if (jumpedBack && !_switchingTrack)
         {
-            BeginTrackSwitch();
+            SuspectTrackSwitch();
         }
         _lastTickPositionMs = rawPositionMs;
 
         if (_switchingTrack)
         {
-            // 新歌已确认（key 已变化）→ 保持占位，等歌词加载完成
+            var elapsed = Environment.TickCount - _switchStartedAt;
+
+            // 新歌已确认（key 已变化）→ 保持占位，等歌词加载完成；
+            // 超过 8 秒仍未完成（QQ 接口偶发挂起）→ 看门狗强制复位，后台加载完成会自行刷新。
             if (_currentKey != _switchKey)
+            {
+                if (elapsed > 8000)
+                {
+                    Debug.WriteLine("[FluentLyrics] 看门狗：歌词加载超时 8s，复位切换状态");
+                    _switchingTrack = false;
+                    _currentIndex = -1;
+                    _lastProgress = -1;
+                    if (_lyrics.Lines.Count == 0)
+                        UpdateLyricDisplay(string.Empty); // 清掉"正在获取歌词…"占位
+                }
                 return;
+            }
 
             // 3 秒内没有新歌确认 → 大概率是拖动进度条误判，恢复正常显示
-            if (Environment.TickCount - _switchStartedAt > 3000)
+            if (elapsed > 3000)
             {
+                Debug.WriteLine("[FluentLyrics] 误判恢复：3s 内未确认新歌，恢复正常显示");
                 _switchingTrack = false;
                 _currentIndex = -1;
                 _lastProgress = -1;
+                if (_lyrics.Lines.Count == 0)
+                    UpdateLyricDisplay(string.Empty); // 清掉"正在获取歌词…"占位
             }
             return;
         }
@@ -584,6 +741,10 @@ public partial class MainWindow
     private static bool ShouldShowTranslation(LyricLine line)
     {
         if (string.IsNullOrWhiteSpace(line.Translation))
+            return false;
+
+        // QQ 翻译里的 "//" 占位（无翻译），不显示
+        if (string.Equals(line.Translation.Trim(), "//", StringComparison.Ordinal))
             return false;
 
         return !string.Equals(line.Translation.Trim(), line.Text.Trim(), StringComparison.Ordinal);
@@ -690,6 +851,14 @@ public partial class MainWindow
         var textWidth = LyricStack.ActualWidth;
         var availableWidth = Math.Max(0, hostWidth - _textBaseLeft);
 
+        // 诊断：尺寸或文本变化才打印，避免刷屏；帮助确认跑马灯分支是否进入
+        var diagSig = $"{hostWidth:F0}|{textWidth:F0}|{availableWidth:F0}|{LyricTextBright.Text}";
+        if (diagSig != _reapplyDiagSig)
+        {
+            _reapplyDiagSig = diagSig;
+            Debug.WriteLine($"[FluentLyrics] 歌词布局: host={hostWidth:F0} text={textWidth:F0} avail={availableWidth:F0} 文本='{LyricTextBright.Text}'");
+        }
+
         // 垂直居中
         Canvas.SetTop(LyricStack, Math.Max(0, (hostHeight - LyricStack.ActualHeight) / 2));
 
@@ -699,6 +868,7 @@ public partial class MainWindow
             LyricStack.BeginAnimation(TranslateTransform.XProperty, null);
             Canvas.SetLeft(LyricStack, _textBaseLeft);
             LyricTranslate.X = 0;
+            _marqueeSignature = string.Empty;
             return;
         }
 
@@ -709,10 +879,21 @@ public partial class MainWindow
         {
             LyricStack.BeginAnimation(TranslateTransform.XProperty, null);
             LyricTranslate.X = 0;
+            _marqueeSignature = string.Empty;
             return;
         }
 
-        var duration = TimeSpan.FromSeconds(Math.Max(4, distance / _marqueeSpeed));
+        var duration = TimeSpan.FromSeconds(Math.Max(4, distance / Math.Max(_marqueeSpeed, 1)));
+        // 同一行、同样距离与时长的跑马灯已在滚动 → 不重启。
+        // PositionCard / PlaybackInfoChanged 等高频调用会反复走到这里，每次都从 0 重启会让文字永远停在开头。
+        // 距离按 8px 粒度量化：任务栏轮询带来的 1px 级宽度抖动不会触发重启，只有真正换行/大变宽才重启。
+        var quantizedDistance = Math.Round(distance / 8) * 8;
+        var signature = $"{LyricTextBright.Text}|{LyricTranslation.Text}|{LyricTranslation.Visibility}|{quantizedDistance:F0}|{duration.TotalSeconds:F0}";
+        if (signature == _marqueeSignature)
+            return;
+
+        _marqueeSignature = signature;
+        Debug.WriteLine($"[FluentLyrics] 跑马灯启动: 距离={distance:F0} 时长={duration.TotalSeconds:F0}s 文本='{LyricTextBright.Text}'");
         var animation = new DoubleAnimation(0, -distance, duration)
         {
             AutoReverse = true,
