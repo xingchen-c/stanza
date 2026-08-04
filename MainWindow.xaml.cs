@@ -231,6 +231,7 @@ public partial class MainWindow
         ApplyLyricBrushes();
         LyricTextBright.FontSize = _settings.FontSize;
         LyricTextDim.FontSize = _settings.FontSize;
+        LyricTranslation.FontSize = Math.Max(10, _settings.FontSize - 3);
         LyricTextBright.Foreground = _lyricBrush;
         LyricTextDim.Foreground = _lyricDimBrush;
         ApplyWindowStyles(); // 更新点击穿透需要重设窗口扩展样式
@@ -563,10 +564,29 @@ public partial class MainWindow
         LyricTextBright.Text = line.Text;
         LyricTextBright.Foreground = _lyricBrush;
 
+        // 非中文歌词且有翻译 → 双行显示；中文歌/无翻译保持单行
+        var translation = ShouldShowTranslation(line) ? line.Translation : null;
+        LyricTranslation.Text = translation ?? string.Empty;
+        LyricTranslation.Visibility = string.IsNullOrEmpty(translation)
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+
         _lastProgress = -1;
         LyricTextBright.Clip = null; // 清掉上一行的裁剪，避免行时长缺失时残留旧边界
         ReapplyLyricDisplay(); // 先完成布局，UpdateLyricProgress 需要文本实际宽度
         UpdateLyricProgress(positionMs);
+    }
+
+    /// <summary>
+    /// 是否显示翻译：数据驱动——QQ 提供了译文且译文与正词不同才显示。
+    /// 不猜歌词语言：中文歌 QQ 一般不返回译文（或返回相同文本），会自动跳过；任何语言通用。
+    /// </summary>
+    private static bool ShouldShowTranslation(LyricLine line)
+    {
+        if (string.IsNullOrWhiteSpace(line.Translation))
+            return false;
+
+        return !string.Equals(line.Translation.Trim(), line.Text.Trim(), StringComparison.Ordinal);
     }
 
     /// <summary>按连续进度右移亮色层的 Clip 右缘（0~1），只在明显变化时更新</summary>
@@ -654,6 +674,8 @@ public partial class MainWindow
         LyricTextBright.Text = text;
         LyricTextBright.Foreground = _lyricBrush;
         LyricTextBright.Clip = null;
+        LyricTranslation.Text = string.Empty;
+        LyricTranslation.Visibility = Visibility.Collapsed;
         ReapplyLyricDisplay();
     }
 
@@ -662,30 +684,30 @@ public partial class MainWindow
         if (LyricHost.ActualWidth <= 0)
             return;
 
-        LyricContent.UpdateLayout();
+        LyricStack.UpdateLayout();
         var hostWidth = LyricHost.ActualWidth;
         var hostHeight = LyricHost.ActualHeight;
-        var textWidth = LyricContent.ActualWidth;
+        var textWidth = LyricStack.ActualWidth;
         var availableWidth = Math.Max(0, hostWidth - _textBaseLeft);
 
         // 垂直居中
-        Canvas.SetTop(LyricContent, Math.Max(0, (hostHeight - LyricContent.ActualHeight) / 2));
+        Canvas.SetTop(LyricStack, Math.Max(0, (hostHeight - LyricStack.ActualHeight) / 2));
 
         // 短文本：紧贴卡片左缘（挨着组件）静态显示
         if (textWidth <= availableWidth - 8)
         {
-            LyricContent.BeginAnimation(TranslateTransform.XProperty, null);
-            Canvas.SetLeft(LyricContent, _textBaseLeft);
+            LyricStack.BeginAnimation(TranslateTransform.XProperty, null);
+            Canvas.SetLeft(LyricStack, _textBaseLeft);
             LyricTranslate.X = 0;
             return;
         }
 
         // 超长文本：跑马灯（从组件右侧开始，向左滚出再返回）
-        Canvas.SetLeft(LyricContent, _textBaseLeft);
+        Canvas.SetLeft(LyricStack, _textBaseLeft);
         var distance = textWidth - availableWidth + MarqueeEndPadding;
         if (distance <= 0)
         {
-            LyricContent.BeginAnimation(TranslateTransform.XProperty, null);
+            LyricStack.BeginAnimation(TranslateTransform.XProperty, null);
             LyricTranslate.X = 0;
             return;
         }
@@ -698,7 +720,7 @@ public partial class MainWindow
         };
         Timeline.SetDesiredFrameRate(animation, 30); // 降低分层窗口重绘频率，减轻 DWM 合成压力
         LyricTranslate.X = 0;
-        LyricContent.BeginAnimation(TranslateTransform.XProperty, animation);
+        LyricStack.BeginAnimation(TranslateTransform.XProperty, animation);
     }
 
     protected override void OnClosed(EventArgs e)

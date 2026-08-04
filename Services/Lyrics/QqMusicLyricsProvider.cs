@@ -57,6 +57,24 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
                 parsed.Sort((a, b) => a.StartTime.CompareTo(b.StartTime));
             }
 
+            // 4. 解析翻译（Trans 与正词同时间轴，按开始时间对齐挂到对应行）
+            var translationMap = BuildTranslationMap(response?.Trans);
+            Debug.WriteLine($"[FluentLyrics] 翻译原始长度: {response?.Trans?.Length ?? 0}，翻译行数: {translationMap.Count}");
+            if (translationMap.Count > 0)
+            {
+                var transLines = translationMap.OrderBy(kv => kv.Key).Select(kv => kv.Value).ToList();
+                parsed = parsed
+                    .Select((l, i) => new LyricLine(
+                        l.StartTime,
+                        l.Text,
+                        l.EndTime,
+                        // 译文通常与正词逐行 1:1 对应；行数不一致时退回时间容差匹配
+                        transLines.Count == parsed.Count
+                            ? transLines[i]
+                            : MatchByTime(l.StartTime, translationMap)))
+                    .ToList();
+            }
+
             if (parsed.Count > 0)
                 return new LyricsResult(LyricsLoadResult.Loaded, parsed);
 
@@ -91,5 +109,63 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
         {
             return false;
         }
+    }
+
+    /// <summary>解析翻译文本（可能是 QRC 逐字或 LRC 逐行，两种都试），返回"开始时间 → 翻译"映射</summary>
+    private static Dictionary<int, string> BuildTranslationMap(string? transRaw)
+    {
+        var map = new Dictionary<int, string>();
+        if (string.IsNullOrWhiteSpace(transRaw))
+            return map;
+
+        foreach (var rawType in new[] { LyricsRawTypes.Qrc, LyricsRawTypes.Lrc })
+        {
+            try
+            {
+                var data = ParseHelper.ParseLyrics(transRaw, rawType);
+                if (data?.Lines is not null)
+                {
+                    foreach (var line in data.Lines)
+                    {
+                        if (TryGetTiming(line, out var start, out var text, out _) &&
+                            !string.IsNullOrWhiteSpace(text) &&
+                            !map.ContainsKey(start))
+                        {
+                            map[start] = text;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // 某种格式解析失败就试下一种
+            }
+
+            if (map.Count > 0)
+                break;
+        }
+
+        return map;
+    }
+
+    /// <summary>按开始时间匹配翻译：先精确，再 ±300ms 内取最近</summary>
+    private static string? MatchByTime(int startTime, Dictionary<int, string> map)
+    {
+        if (map.TryGetValue(startTime, out var exact))
+            return exact;
+
+        string? best = null;
+        var bestDelta = int.MaxValue;
+        foreach (var kv in map)
+        {
+            var delta = Math.Abs(kv.Key - startTime);
+            if (delta <= 300 && delta < bestDelta)
+            {
+                best = kv.Value;
+                bestDelta = delta;
+            }
+        }
+
+        return best;
     }
 }

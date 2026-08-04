@@ -20,26 +20,33 @@
         TextOptions.TextFormattingMode="Ideal">
     <Grid x:Name="LyricHost" ClipToBounds="True" Margin="0">
         <Canvas>
-            <!-- 双层歌词：暗色全文垫底，亮色层用 Clip 矩形按进度揭开（卡拉OK式）。
+            <!-- 双层歌词 + 翻译：暗色全文垫底，亮色层用 Clip 矩形按进度揭开（卡拉OK式）。
                  不用 LinearGradientBrush 文本前景：WPF 会按字形段（字体回退拆段）分别映射相对渐变，
-                 一行里出现多条白/灰边界，字被劈开像重影 -->
-            <Grid x:Name="LyricContent">
-                <Grid.RenderTransform>
+                 一行里出现多条白/灰边界，字被劈开像重影。翻译固定暗色显示在正词下方（非中文歌时） -->
+            <StackPanel x:Name="LyricStack" Orientation="Vertical">
+                <StackPanel.RenderTransform>
                     <TranslateTransform x:Name="LyricTranslate" />
-                </Grid.RenderTransform>
-                <Grid.Effect>
+                </StackPanel.RenderTransform>
+                <StackPanel.Effect>
                     <DropShadowEffect BlurRadius="6" ShadowDepth="1" Opacity="0.75" Color="Black" />
-                </Grid.Effect>
-                <TextBlock x:Name="LyricTextDim"
-                           FontSize="15"
-                           Foreground="#6EFFFFFF"
-                           TextWrapping="NoWrap" />
-                <TextBlock x:Name="LyricTextBright"
-                           FontSize="15"
-                           Foreground="White"
-                           Text="FluentLyrics 正在启动…"
-                           TextWrapping="NoWrap" />
-            </Grid>
+                </StackPanel.Effect>
+                <Grid x:Name="LyricContent">
+                    <TextBlock x:Name="LyricTextDim"
+                               FontSize="15"
+                               Foreground="#6EFFFFFF"
+                               TextWrapping="NoWrap" />
+                    <TextBlock x:Name="LyricTextBright"
+                               FontSize="15"
+                               Foreground="White"
+                               Text="FluentLyrics 正在启动…"
+                               TextWrapping="NoWrap" />
+                </Grid>
+                <TextBlock x:Name="LyricTranslation"
+                           FontSize="12"
+                           Foreground="#8EFFFFFF"
+                           TextWrapping="NoWrap"
+                           Visibility="Collapsed" />
+            </StackPanel>
         </Canvas>
     </Grid>
 </Window>
