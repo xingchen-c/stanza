@@ -16,7 +16,7 @@
         WindowStartupLocation="Manual"
         Visibility="Hidden"
         FontFamily="Segoe UI Variable, Segoe UI, Microsoft YaHei UI">
-    <Grid x:Name="LyricHost" ClipToBounds="True" Margin="14,0">
+    <Grid x:Name="LyricHost" ClipToBounds="True" Margin="0">
         <Canvas>
             <TextBlock x:Name="LyricText"
                        FontSize="15"

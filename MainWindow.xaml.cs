@@ -45,6 +45,8 @@ public partial class MainWindow
     private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
     // ---- 状态 ----
+    // 管理器必须一直持有：它是局部变量被 GC 回收后，会话事件（PlaybackInfoChanged 等）会静默丢失
+    private GlobalSystemMediaTransportControlsSessionManager? _sessionManager;
     private GlobalSystemMediaTransportControlsSession? _session;
     private readonly LyricsService _lyrics = new();
     private readonly TaskbarService _taskbar = new();
@@ -52,6 +54,7 @@ public partial class MainWindow
 
     private string _currentKey = string.Empty;
     private int _currentIndex = -1;
+    private bool _hiddenForPlayback;
 
     public MainWindow()
     {
@@ -68,9 +71,11 @@ public partial class MainWindow
         safetyTimer.Tick += (_, _) =>
         {
             safetyTimer.Stop();
-            if (Visibility != Visibility.Visible)
-                Visibility = Visibility.Visible;
+            PositionCard(); // 重新定位一次：定位成功自己显示，组件隐藏则保持隐藏
+            if (Visibility != Visibility.Visible && !_taskbar.HasTaskbar)
+                Visibility = Visibility.Visible; // 任务栏还没就绪才兜底显示
         };
+
         safetyTimer.Start();
     }
 
@@ -108,6 +113,14 @@ public partial class MainWindow
         if (!_taskbar.HasTaskbar)
             return;
 
+        // 暂停/停止/会话关闭时隐藏卡片（观感与 FluentFlyout 暂停消失一致）
+        if (ShouldHideForPlayback())
+        {
+            if (Visibility != Visibility.Collapsed)
+                Visibility = Visibility.Collapsed;
+            return;
+        }
+
         var taskbarRect = _taskbar.GetTaskbarRectDips(this);
         var widget = _taskbar.GetFluentFlyoutWidgetRectDips(this);
         var start = _taskbar.GetStartButtonRectDips(this);
@@ -123,17 +136,48 @@ public partial class MainWindow
             : taskbarRect.Left + taskbarRect.Width / 2;
 
         var cardWidth = Math.Max(120, Math.Min(rightEdge - left, taskbarRect.Width - left));
+        var cardHeight = Math.Max(taskbarRect.Height, 36);
 
         Debug.WriteLine($"[FluentLyrics] 卡片 {left:F0}..{rightEdge:F0} 宽={cardWidth:F0}");
 
-        Left = left;
-        Top = taskbarRect.Top;
-        Width = cardWidth;
-        Height = Math.Max(taskbarRect.Height, 36);
+        // 位置/尺寸没变化就不动窗口：反复 SetWindowPos 会让分层窗口重绘，引起闪烁
+        if (Math.Abs(Left - left) > 0.5 || Math.Abs(Top - taskbarRect.Top) > 0.5 ||
+            Math.Abs(Width - cardWidth) > 0.5 || Math.Abs(Height - cardHeight) > 0.5)
+        {
+            Left = left;
+            Top = taskbarRect.Top;
+            Width = cardWidth;
+            Height = cardHeight;
+        }
 
         ShowCardIfReady();
         ReapplyLyricDisplay();
     }
+
+    /// <summary>是否因播放状态而需要隐藏卡片；无会话或查询失败时不隐藏</summary>
+    private bool ShouldHideForPlayback()
+    {
+        if (_session is null)
+            return false;
+
+        try
+        {
+            var status = _session.GetPlaybackInfo().PlaybackStatus;
+            return status is GlobalSystemMediaTransportControlsSessionPlaybackStatus.Paused
+                or GlobalSystemMediaTransportControlsSessionPlaybackStatus.Stopped
+                or GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed;
+        }
+        catch
+        {
+            return false; // 查询失败时保持现状，避免误隐藏
+        }
+    }
+
+    private void OnPlaybackInfoChanged(GlobalSystemMediaTransportControlsSession sender, PlaybackInfoChangedEventArgs args)
+    {
+        Dispatcher.BeginInvoke(PositionCard);
+    }
+
 
     /// <summary>定位成功后再显示，避免启动瞬间以默认位置盖住 FluentFlyout 组件</summary>
     private void ShowCardIfReady()
@@ -146,9 +190,9 @@ public partial class MainWindow
     {
         try
         {
-            var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-            manager.CurrentSessionChanged += (_, _) => Dispatcher.BeginInvoke(() => UpdateSession(manager.GetCurrentSession()));
-            UpdateSession(manager.GetCurrentSession());
+            _sessionManager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
+            _sessionManager.CurrentSessionChanged += (_, _) => Dispatcher.BeginInvoke(() => UpdateSession(_sessionManager.GetCurrentSession()));
+            UpdateSession(_sessionManager.GetCurrentSession());
         }
         catch (Exception ex)
         {
@@ -162,6 +206,7 @@ public partial class MainWindow
         {
             _session.MediaPropertiesChanged -= OnMediaPropertiesChanged;
             _session.TimelinePropertiesChanged -= OnTimelinePropertiesChanged;
+            _session.PlaybackInfoChanged -= OnPlaybackInfoChanged;
         }
 
         _session = session;
@@ -178,6 +223,9 @@ public partial class MainWindow
 
         _session.MediaPropertiesChanged += OnMediaPropertiesChanged;
         _session.TimelinePropertiesChanged += OnTimelinePropertiesChanged;
+        _session.PlaybackInfoChanged += OnPlaybackInfoChanged;
+        PositionCard(); // 新会话接入后立即按播放状态刷新一次显隐
+
         _ticker.Start();
         _ = RefreshTrackAsync();
     }
@@ -241,11 +289,22 @@ public partial class MainWindow
         // 歌词推进由定时器驱动，这里不需要做任何事
     }
 
-    /// <summary>定时器：按播放位置取当前歌词行，只在行变化时刷新界面</summary>
+    /// <summary>定时器：每拍检查播放状态驱动显隐；按播放位置取当前歌词行，只在行变化时刷新界面</summary>
     private void OnTickerTick(object? sender, EventArgs e)
     {
         var session = _session;
-        if (session is null || _lyrics.Lines.Count == 0)
+        if (session is null)
+            return;
+
+        // 播放状态变化 → 立即刷新卡片显隐（PlaybackInfoChanged 事件之外的 100ms 兜底）
+        var hide = ShouldHideForPlayback();
+        if (hide != _hiddenForPlayback)
+        {
+            _hiddenForPlayback = hide;
+            PositionCard();
+        }
+
+        if (_lyrics.Lines.Count == 0)
             return;
 
         int index;
@@ -296,7 +355,7 @@ public partial class MainWindow
         Dispatcher.Invoke(() => UpdateLyricDisplay(text));
     }
 
-    /// <summary>显示歌词/状态文本：短文本居中，超长文本跑马灯滚动</summary>
+    /// <summary>显示歌词/状态文本：短文本贴左（紧挨组件卡片），超长文本跑马灯滚动</summary>
     private void UpdateLyricDisplay(string text)
     {
         LyricText.Text = text ?? string.Empty;
@@ -317,11 +376,11 @@ public partial class MainWindow
         // 垂直居中
         Canvas.SetTop(LyricText, Math.Max(0, (hostHeight - LyricText.ActualHeight) / 2));
 
-        // 短文本：在"组件右侧到卡片末尾"区域内静态居中
+        // 短文本：紧贴卡片左缘（挨着 FluentFlyout 组件）静态显示
         if (textWidth <= availableWidth - 8)
         {
             LyricText.BeginAnimation(TranslateTransform.XProperty, null);
-            Canvas.SetLeft(LyricText, _textBaseLeft + Math.Max(0, (availableWidth - textWidth) / 2));
+            Canvas.SetLeft(LyricText, _textBaseLeft);
             LyricTranslate.X = 0;
             return;
         }
@@ -342,6 +401,7 @@ public partial class MainWindow
             AutoReverse = true,
             RepeatBehavior = RepeatBehavior.Forever,
         };
+        Timeline.SetDesiredFrameRate(animation, 30); // 降低分层窗口重绘频率，减轻 DWM 合成压力
         LyricTranslate.X = 0;
         LyricText.BeginAnimation(TranslateTransform.XProperty, animation);
     }

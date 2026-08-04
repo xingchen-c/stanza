@@ -1,22 +1,18 @@
-﻿using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using System.Text;
-using System.Windows.Automation;
 
 namespace FluentLyrics;
 
 /// <summary>
 /// 任务栏定位服务：
 /// 读取主任务栏（Shell_TrayWnd）矩形并换算成 DIP 坐标；
-/// 自动探测任务栏上第一个组件（FluentFlyout 音乐组件）的位置；
-/// 任务栏移动 / 自动隐藏 / 组件显隐变化时触发 TaskbarChanged。
+/// 自动探测任务栏上 FluentFlyout 组件的可见区域和开始按钮位置；
+/// 任务栏移动 / 自动隐藏 / 组件显隐 / 图标数量变化时触发 TaskbarChanged。
 /// </summary>
 public sealed class TaskbarService : IDisposable
 {
@@ -27,6 +23,9 @@ public sealed class TaskbarService : IDisposable
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr FindWindow(string? className, string? windowName);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr childAfter, string? className, string? windowName);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -79,17 +78,31 @@ public sealed class TaskbarService : IDisposable
     private readonly Dispatcher _dispatcher = Dispatcher.CurrentDispatcher;
     private readonly DispatcherTimer _pollTimer;
     private RECT _taskbarRect;
-    private string _componentSignature = string.Empty;
+    private string _layoutSignature = string.Empty;
+
+    // 探测结果缓存（屏幕物理像素）：
+    // 单次探测失败时保留上次结果，避免卡片瞬间跳到兜底位置盖住 FluentFlyout 组件
+    private RECT _widgetRect;
+    private bool _hasWidgetRect;
+    private RECT _startButtonRect;
+    private bool _hasStartButtonRect;
 
     /// <summary>是否拿到了有效的任务栏矩形</summary>
     public bool HasTaskbar => _taskbarRect.Width > 0 && _taskbarRect.Height > 0;
 
-    /// <summary>任务栏矩形或组件位置变化时触发（已在 UI 线程）</summary>
+    /// <summary>FluentFlyout 进程是否在运行</summary>
+    public bool HasComponentProcess { get; private set; }
+
+    /// <summary>本次探测组件是否真的在显示（不读粘性缓存，暂停播放组件隐藏时为 false）</summary>
+    public bool IsWidgetPresent { get; private set; }
+
+
+    /// <summary>任务栏矩形、组件可见区域或开始按钮位置变化时触发（已在 UI 线程）</summary>
     public event Action? TaskbarChanged;
 
     public TaskbarService()
     {
-        // 兜底轮询：任务栏自动隐藏、被移动、组件显隐等场景没有可靠事件，1 秒一次足够
+        // 兜底轮询：任务栏自动隐藏、被移动、组件显隐、图标增减等场景没有可靠事件，1 秒一次足够
         _pollTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _pollTimer.Tick += (_, _) => Refresh();
         _pollTimer.Start();
@@ -105,28 +118,70 @@ public sealed class TaskbarService : IDisposable
         _dispatcher.BeginInvoke(new Action(Refresh));
     }
 
-    /// <summary>立即重新读取任务栏与组件信息；有变化时触发 TaskbarChanged</summary>
+    /// <summary>立即重新读取任务栏、组件区域与开始按钮位置；有变化时触发 TaskbarChanged</summary>
     public void Refresh()
     {
         var rect = FindPrimaryTaskbarRect();
-        var signature = BuildComponentSignature(rect);
+        UpdateWidgetCache();
+        UpdateStartButtonCache();
 
-        if (rect.Left == _taskbarRect.Left && rect.Top == _taskbarRect.Top &&
-            rect.Right == _taskbarRect.Right && rect.Bottom == _taskbarRect.Bottom &&
-            signature == _componentSignature)
+        // 签名同时覆盖：任务栏矩形、组件可见区域（切歌会改变组件宽度）、
+        // 开始按钮位置（任务栏图标增减会让居中图标组移动）
+        var signature = $"{rect.Left},{rect.Top},{rect.Right},{rect.Bottom}|" +
+                        (_hasWidgetRect ? $"{_widgetRect.Left},{_widgetRect.Top},{_widgetRect.Right},{_widgetRect.Bottom}" : "-") + "|" +
+                        (_hasStartButtonRect ? $"{_startButtonRect.Left},{_startButtonRect.Top},{_startButtonRect.Right},{_startButtonRect.Bottom}" : "-") + "|" +
+                        IsWidgetPresent;
+
+        if (signature == _layoutSignature)
             return;
 
+        _layoutSignature = signature;
         _taskbarRect = rect;
-        _componentSignature = signature;
         TaskbarChanged?.Invoke();
+    }
+
+    /// <summary>探测 FluentFlyout 组件可见区域；偶发失败保留旧值，进程退出才清空</summary>
+    private void UpdateWidgetCache()
+    {
+        var rect = DetectWidgetRegionRect();
+        HasComponentProcess = GetComponentProcessIds().Any();
+        IsWidgetPresent = rect is not null;
+
+        if (rect is { } r)
+        {
+            _widgetRect = r;
+            _hasWidgetRect = true;
+        }
+        else if (!HasComponentProcess)
+        {
+            // FluentFlyout 没在运行，组件确实不存在
+            _hasWidgetRect = false;
+        }
+    }
+
+
+    /// <summary>探测开始按钮位置；偶发失败保留旧值（元素失效时下轮自动重新查询）</summary>
+    private void UpdateStartButtonCache()
+    {
+        var rect = DetectStartButtonRect();
+        if (rect is { } r)
+        {
+            _startButtonRect = r;
+            _hasStartButtonRect = true;
+        }
     }
 
     /// <summary>把主任务栏矩形换算成 DIP 坐标（相对虚拟屏幕左上角）</summary>
     public Rect GetTaskbarRectDips(Window window)
     {
+        return ToDips(window, _taskbarRect);
+    }
+
+    private static Rect ToDips(Window window, RECT rect)
+    {
         var transform = GetTransform(window);
-        var topLeft = transform.Transform(new Point(_taskbarRect.Left, _taskbarRect.Top));
-        var bottomRight = transform.Transform(new Point(_taskbarRect.Right, _taskbarRect.Bottom));
+        var topLeft = transform.Transform(new Point(rect.Left, rect.Top));
+        var bottomRight = transform.Transform(new Point(rect.Right, rect.Bottom));
         return new Rect(topLeft, bottomRight);
     }
 
@@ -259,18 +314,6 @@ public sealed class TaskbarService : IDisposable
         return ids;
     }
 
-    private static string BuildComponentSignature(RECT trayRect)
-    {
-        var parts = new List<string>();
-        foreach (var hwnd in FindComponentWindows(trayRect))
-        {
-            if (GetWindowRect(hwnd, out var r))
-                parts.Add($"{r.Left},{r.Top},{r.Right},{r.Bottom}");
-        }
-
-        return string.Join(";", parts);
-    }
-
     public void Dispose()
     {
         _pollTimer.Stop();
@@ -279,15 +322,34 @@ public sealed class TaskbarService : IDisposable
     }
 
     /// <summary>
-    /// 读取 FluentFlyout 任务栏小组件的可见区域（DIP 矩形）。
-    /// FluentFlyout 用 SetWindowRgn 把铺满任务栏的宿主窗口裁剪成组件形状，
-    /// 所以 GetWindowRgn + GetRgnBox 拿到的就是组件真实位置 —— 这是我们的"自动锚点"。
+    /// FluentFlyout 任务栏小组件的可见区域（DIP 矩形），来自最近一次成功探测的缓存。
     /// 没找到返回 null。
     /// </summary>
     public Rect? GetFluentFlyoutWidgetRectDips(Window window)
     {
+        if (!_hasWidgetRect)
+            return null;
+
+        var rect = ToDips(window, _widgetRect);
+        Debug.WriteLine($"[FluentLyrics] FluentFlyout 组件可见区域: {rect}");
+        return rect;
+    }
+
+    /// <summary>
+    /// 读取 FluentFlyout 任务栏小组件的可见区域（屏幕物理像素）。
+    /// FluentFlyout 用 SetWindowRgn 把铺满任务栏的宿主窗口裁剪成组件形状，
+    /// 所以 GetWindowRgn + GetRgnBox 拿到的就是组件真实位置 —— 这是我们的"自动锚点"。
+    /// 没找到返回 null。
+    /// </summary>
+    private static RECT? DetectWidgetRegionRect()
+    {
+        var trayRect = FindPrimaryTaskbarRect();
+
         foreach (var hwnd in FindFluentFlyoutTaskbarWindows())
         {
+            if (!IsWindowVisible(hwnd)) // 组件被隐藏时视为不存在
+                continue;
+
             var rgn = CreateRectRgn(0, 0, 0, 0);
             try
             {
@@ -296,15 +358,20 @@ public sealed class TaskbarService : IDisposable
                 if (GetRgnBox(rgn, out var box) == 0)
                     continue;
 
+                // 暂停/恢复/切歌的过渡瞬间，裁剪区域可能短暂铺满整个任务栏，
+                // 组件卡片不可能那么宽，这种读数直接忽略，等下一轮恢复正常
+                if (trayRect.Width > 0 && box.Right - box.Left > trayRect.Width / 2)
+                    continue;
+
                 // 区域坐标相对窗口左上角；窗口铺满任务栏，加上窗口屏幕原点即绝对坐标
                 GetWindowRect(hwnd, out var winRect);
-                var transform = GetTransform(window);
-                var topLeft = transform.Transform(new Point(winRect.Left + box.Left, winRect.Top + box.Top));
-                var bottomRight = transform.Transform(new Point(winRect.Left + box.Right, winRect.Top + box.Bottom));
-                var rect = new Rect(topLeft, bottomRight);
-
-                Debug.WriteLine($"[FluentLyrics] FluentFlyout 组件可见区域: {rect}");
-                return rect;
+                return new RECT
+                {
+                    Left = winRect.Left + box.Left,
+                    Top = winRect.Top + box.Top,
+                    Right = winRect.Left + box.Right,
+                    Bottom = winRect.Top + box.Bottom,
+                };
             }
             finally
             {
@@ -315,53 +382,38 @@ public sealed class TaskbarService : IDisposable
         return null;
     }
 
-    private AutomationElement? _startButtonElement;
-
     /// <summary>
-    /// 通过 UI Automation 定位任务栏开始按钮（AutomationId=StartButton），返回 DIP 矩形。
-    /// 找不到返回 null；元素缓存，Explorer 重启后自动重新查询。
+    /// 开始按钮的 DIP 矩形，来自最近一次成功探测的缓存。找不到返回 null。
     /// </summary>
     public Rect? GetStartButtonRectDips(Window window)
+    {
+        if (!_hasStartButtonRect)
+            return null;
+
+        var rect = ToDips(window, _startButtonRect);
+        Debug.WriteLine($"[FluentLyrics] 开始按钮矩形: {rect}");
+        return rect;
+    }
+
+    /// <summary>
+    /// 通过 Win32 子窗口定位开始按钮（Shell_TrayWnd 下类名为 Start 的子窗口），返回屏幕物理像素矩形。
+    /// 替代原 UI Automation 方案：UIA 客户端会让 explorer 一直保持无障碍树运转，拖慢整个任务栏。
+    /// 找不到返回 null。
+    /// </summary>
+    private static RECT? DetectStartButtonRect()
     {
         var trayHwnd = FindWindow(PrimaryTaskbarClass, null);
         if (trayHwnd == IntPtr.Zero)
             return null;
 
-        try
-        {
-            if (_startButtonElement is null)
-            {
-                var root = AutomationElement.FromHandle(trayHwnd);
-                var findTask = Task.Run(() => root.FindFirst(
-                    TreeScope.Descendants,
-                    new PropertyCondition(AutomationElement.AutomationIdProperty, "StartButton")));
-                if (!findTask.Wait(1000))
-                {
-                    _startButtonElement = null;
-                    return null;
-                }
-
-                _startButtonElement = findTask.Result;
-                if (_startButtonElement is null)
-                    return null;
-            }
-
-            var bounds = _startButtonElement.Current.BoundingRectangle;
-            if (bounds.IsEmpty)
-                return null;
-
-            var transform = GetTransform(window);
-            var topLeft = transform.Transform(new Point(bounds.Left, bounds.Top));
-            var bottomRight = transform.Transform(new Point(bounds.Right, bounds.Bottom));
-            var rect = new Rect(topLeft, bottomRight);
-            Debug.WriteLine($"[FluentLyrics] 开始按钮矩形: {rect}");
-            return rect;
-        }
-        catch
-        {
-            _startButtonElement = null; // 元素失效（Explorer 重启等），下次重新查询
+        var startHwnd = FindWindowEx(trayHwnd, IntPtr.Zero, "Start", null);
+        if (startHwnd == IntPtr.Zero)
             return null;
-        }
+
+        if (!GetWindowRect(startHwnd, out var rect) || rect.Width <= 0 || rect.Height <= 0)
+            return null;
+
+        return rect;
     }
 
     /// <summary>在任务栏子窗口中找 FluentFlyout 的宿主窗口（类名 HwndWrapper[FluentFlyout...）</summary>
