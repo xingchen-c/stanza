@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -7,6 +8,7 @@ using System.Windows.Threading;
 using Windows.Media.Control;
 using System.Diagnostics;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using FluentLyrics.Models;
@@ -46,6 +48,11 @@ public partial class MainWindow
     private bool _lyricsRetryPending;                             // 是否已有"未找到歌词"延迟重试在跑
     private string _marqueeSignature = string.Empty;              // 上次跑马灯签名（文本+距离+时长），避免重复重启
     private string _reapplyDiagSig = string.Empty;                // 布局诊断签名（仅变化时打印，防刷屏）
+    private bool _adjustingPosition;                              // 托盘"调整歌词位置"模式（临时关闭点击穿透）
+    private bool _dragging;                                       // 调整模式下正在拖动卡片
+    private Point _dragGrabOffset;                                // 光标(屏幕DIP)相对窗口左上角的抓取偏移
+    private double _lastClipWidth = -1;                           // 上次裁剪宽度（逐字/线性共用去重）
+    private readonly Dictionary<string, double[]> _wordBoundaryCache = new(); // 行文本 → 各字结束位置的像素宽度
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtr")]
     private static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
@@ -56,6 +63,17 @@ public partial class MainWindow
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetCursorPos(out POINT lpPoint);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT
+    {
+        public int X;
+        public int Y;
+    }
 
     // ---- 状态 ----
     // 管理器必须一直持有：它是局部变量被 GC 回收后，会话事件（PlaybackInfoChanged 等）会静默丢失
@@ -83,12 +101,21 @@ public partial class MainWindow
         _ticker.Tick += OnTickerTick;
         LyricHost.SizeChanged += (_, _) => ReapplyLyricDisplay();
         _taskbar.TaskbarChanged += PositionCard;
+        _taskbar.ApplySettings(_settings);
 
         // 托盘：显示/隐藏、设置、打开日志目录、退出（Ctrl+Alt+Q 与 QQ 音乐快捷键冲突，已移除）
         _tray.ShowHideRequested += ToggleCardVisibility;
         _tray.SettingsRequested += OpenSettings;
         _tray.OpenLogDirectoryRequested += OpenLogDirectory;
+        _tray.AdjustPositionRequested += ToggleAdjustPosition;
+        _tray.ResetPositionRequested += ResetManualOffset;
         _tray.ExitRequested += Close;
+
+        // 拖动调整位置：仅"调整模式"下窗口能收到鼠标（平时点击穿透）
+        MouseLeftButtonDown += OnAdjustMouseDown;
+        MouseMove += OnAdjustMouseMove;
+        MouseLeftButtonUp += OnAdjustMouseUp;
+        MouseRightButtonDown += OnAdjustMouseRightDown;
 
         // 兜底：2 秒后无论如何显示，避免定位失败时窗口一直隐藏
         var safetyTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(2000) };
@@ -120,13 +147,11 @@ public partial class MainWindow
         exStyle |= WS_EX_NOACTIVATE;
         if (_clickThrough)
             exStyle |= WS_EX_TRANSPARENT;
+        else
+            exStyle &= ~WS_EX_TRANSPARENT; // 调整位置模式需要接收鼠标，必须清掉点击穿透位
         SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(exStyle));
         SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
-
-    // 卡片右缘与开始按钮的间距（DIP）
-    private const double CardRightGap = 8;
-    private const double ComponentGap = 6;
 
     // 歌词文本在卡片内的起始 x（卡片紧贴组件右侧，从 0 开始即可）
     private readonly double _textBaseLeft = 0;
@@ -144,33 +169,35 @@ public partial class MainWindow
             return;
         }
 
+        // 调整模式下位置由用户拖动控制，不自动定位（退出时再恢复锚点+偏移）
+        if (_adjustingPosition)
+            return;
+
         var taskbarRect = _taskbar.GetTaskbarRectDips(this);
-        var widget = _taskbar.GetWidgetRectDips(this);
-        var start = _taskbar.GetStartButtonRectDips(this);
+        if (_taskbar.GetCardRegionDips(this) is not { } card)
+            return; // 还没算出来，等下一轮定位
 
-        // 左边缘：组件右边缘（不覆盖组件，避免叠层闪烁）
-        double left = widget is { } w
-            ? w.Right + ComponentGap
-            : taskbarRect.Left;
-
-        // 右边缘：开始按钮左侧；找不到时主屏回退任务栏中线（开始按钮居中），副屏回退右缘留出托盘空间
-        double rightEdge = start is { } s
-            ? s.Left - CardRightGap
-            : _taskbar.IsPrimaryTaskbar
-                ? taskbarRect.Left + taskbarRect.Width / 2
-                : taskbarRect.Right - 170;
-
-        var cardWidth = Math.Max(120, Math.Min(rightEdge - left, taskbarRect.Width - left));
+        var cardWidth = _settings.AutoCardWidth
+            ? Math.Max(120, card.Width)
+            : Math.Max(120, _settings.CardWidth);
+        cardWidth = Math.Min(cardWidth, taskbarRect.Width); // 不超出任务栏
         var cardHeight = Math.Max(taskbarRect.Height, 36);
 
-        AppLog.Debug($"卡片 {left:F0}..{rightEdge:F0} 宽={cardWidth:F0}");
+        // 卡片必须待在任务栏范围内：手动偏移或锚点变化都不应把它拖出任务栏
+        var left = Math.Clamp(card.Left + _settings.ManualOffsetX,
+            taskbarRect.Left, Math.Max(taskbarRect.Left, taskbarRect.Right - cardWidth));
+        var top = Math.Clamp(card.Top + _settings.ManualOffsetY,
+            taskbarRect.Top, Math.Max(taskbarRect.Top, taskbarRect.Bottom - cardHeight));
+
+        AppLog.Debug($"卡片 {left:F0}..{left + cardWidth:F0} 宽={cardWidth:F0} " +
+                     $"偏移=({_settings.ManualOffsetX:F0},{_settings.ManualOffsetY:F0})");
 
         // 位置/尺寸没变化就不动窗口：反复 SetWindowPos 会让分层窗口重绘，引起闪烁
-        if (Math.Abs(Left - left) > 0.5 || Math.Abs(Top - taskbarRect.Top) > 0.5 ||
+        if (Math.Abs(Left - left) > 0.5 || Math.Abs(Top - top) > 0.5 ||
             Math.Abs(Width - cardWidth) > 0.5 || Math.Abs(Height - cardHeight) > 0.5)
         {
             Left = left;
-            Top = taskbarRect.Top;
+            Top = top;
             Width = cardWidth;
             Height = cardHeight;
             ReapplyLyricDisplay(); // 尺寸变化才重新应用布局；无变化时保持跑马灯继续滚动，不打断
@@ -243,12 +270,146 @@ public partial class MainWindow
         }
     }
 
+    /// <summary>托盘菜单：进入/退出"调整位置"模式（进入时临时关闭点击穿透以便拖拽）</summary>
+    private void ToggleAdjustPosition()
+    {
+        if (_adjustingPosition)
+        {
+            ExitAdjustMode(save: true); // 再点一次 = 保存并退出
+            return;
+        }
+
+        if (Visibility != Visibility.Visible)
+            Visibility = Visibility.Visible;
+
+        _adjustingPosition = true;
+        _clickThrough = false;
+        _currentIndex = -1;
+        _lastProgress = -1;
+        ApplyWindowStyles();
+        _tray.SetAdjusting(true);
+        SetStatus("拖动卡片调整位置，右键完成");
+        AppLog.Info("进入位置调整模式（点击穿透已临时关闭）");
+    }
+
+    /// <summary>托盘菜单：清除手动偏移，回到自动定位</summary>
+    private void ResetManualOffset()
+    {
+        if (_adjustingPosition)
+            ExitAdjustMode(save: false);
+
+        _settings.ManualOffsetX = 0;
+        _settings.ManualOffsetY = 0;
+        AppSettingsService.Save(_settings);
+        AppLog.Info("已重置手动位置偏移");
+        PositionCard();
+    }
+
+    /// <summary>退出调整模式：save=true 先把当前偏移存盘；false 仅退出（供"重置位置"复用）</summary>
+    private void ExitAdjustMode(bool save)
+    {
+        if (!_adjustingPosition)
+            return;
+
+        if (save)
+            SaveManualOffset();
+
+        _adjustingPosition = false;
+        if (_dragging)
+        {
+            ReleaseMouseCapture();
+            _dragging = false;
+        }
+
+        _clickThrough = _settings.ClickThrough;
+        ApplyWindowStyles();
+        _tray.SetAdjusting(false);
+        _currentIndex = -1;
+        _lastProgress = -1;
+        SetStatus(string.Empty); // 清掉调整提示，下一拍 ticker 会重绘当前行
+        AppLog.Info("退出位置调整模式");
+        PositionCard(); // 恢复锚点+偏移定位
+    }
+
+    private void OnAdjustMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (!_adjustingPosition)
+            return;
+
+        _dragging = true;
+        var cursor = GetCursorPosDips();
+        _dragGrabOffset = new Point(Left - cursor.X, Top - cursor.Y);
+        CaptureMouse();
+        e.Handled = true;
+    }
+
+    private void OnAdjustMouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_adjustingPosition || !_dragging)
+            return;
+
+        // 用绝对光标位置 + 抓取偏移定位：窗口移动不会产生"相对坐标反馈"导致抖动/不跟手
+        var cursor = GetCursorPosDips();
+        var taskbar = _taskbar.GetTaskbarRectDips(this);
+        var maxLeft = Math.Max(taskbar.Left, taskbar.Right - Width);
+        var maxTop = Math.Max(taskbar.Top, taskbar.Bottom - Height);
+        Left = Math.Clamp(cursor.X + _dragGrabOffset.X, taskbar.Left, maxLeft);
+        Top = Math.Clamp(cursor.Y + _dragGrabOffset.Y, taskbar.Top, maxTop);
+        e.Handled = true;
+    }
+
+    private void OnAdjustMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_adjustingPosition || !_dragging)
+            return;
+
+        _dragging = false;
+        ReleaseMouseCapture();
+        e.Handled = true;
+
+        // 松手保存当前偏移，但保持调整模式，方便继续微调；右键/托盘菜单再保存退出
+        SaveManualOffset();
+    }
+
+    /// <summary>把当前窗口位置换算成相对自动锚点区域的偏移并保存（DIP）</summary>
+    private void SaveManualOffset()
+    {
+        if (_taskbar.GetCardRegionDips(this) is { } anchor)
+        {
+            _settings.ManualOffsetX = Left - anchor.Left;
+            _settings.ManualOffsetY = Top - anchor.Top;
+        }
+        AppSettingsService.Save(_settings);
+        AppLog.Info($"手动偏移已保存: X={_settings.ManualOffsetX:F1}, Y={_settings.ManualOffsetY:F1}");
+    }
+
+    /// <summary>光标屏幕位置（物理像素）换算成 DIP，供拖动定位使用</summary>
+    private Point GetCursorPosDips()
+    {
+        GetCursorPos(out var pt);
+        var transform = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformFromDevice
+                        ?? Matrix.Identity;
+        return transform.Transform(new Point(pt.X, pt.Y));
+    }
+
+    private void OnAdjustMouseRightDown(object sender, MouseButtonEventArgs e)
+    {
+        if (!_adjustingPosition)
+            return;
+
+        e.Handled = true;
+        ExitAdjustMode(save: true); // 右键 = 保存并退出
+    }
+
     /// <summary>保存设置后重应用：字号/颜色/滚动速度/点击穿透</summary>
     private void ApplySettings()
     {
+        _taskbar.ApplySettings(_settings);
         _marqueeSpeed = _settings.MarqueeSpeed;
         _clickThrough = _settings.ClickThrough;
         ApplyLyricBrushes();
+        _wordBoundaryCache.Clear(); // 字号可能变化，逐字宽度缓存作废
+        _lastClipWidth = -1;
         LyricTextBright.FontSize = _settings.FontSize;
         LyricTextDim.FontSize = _settings.FontSize;
         LyricTranslation.FontSize = Math.Max(10, _settings.FontSize - 3);
@@ -631,6 +792,10 @@ public partial class MainWindow
         if (session is null)
             return;
 
+        // 调整位置模式下不渲染歌词进度，避免卡拉OK裁剪盖住提示文字
+        if (_adjustingPosition)
+            return;
+
         // 播放状态变化 → 立即刷新卡片显隐（PlaybackInfoChanged 事件之外的 100ms 兜底）
         var hide = ShouldHideForPlayback();
         if (hide != _hiddenForPlayback)
@@ -752,6 +917,7 @@ public partial class MainWindow
 
         _lastProgress = -1;
         LyricTextBright.Clip = null; // 清掉上一行的裁剪，避免行时长缺失时残留旧边界
+        _lastClipWidth = -1;
         ReapplyLyricDisplay(); // 先完成布局，UpdateLyricProgress 需要文本实际宽度
         UpdateLyricProgress(positionMs);
     }
@@ -779,23 +945,125 @@ public partial class MainWindow
             return;
 
         var line = _lyrics.Lines[_currentIndex];
-        var duration = GetLineDuration(_currentIndex);
-        if (duration <= 0)
-            return;
-
-        var progress = (positionMs - line.StartTime) / (double)duration;
-        progress = Math.Clamp(progress, 0, 1);
-        if (Math.Abs(progress - _lastProgress) < 0.002)
-            return;
-
-        _lastProgress = progress;
         var width = LyricTextBright.ActualWidth;
         if (width <= 0)
             return;
 
-        // 亮色层只露出 0..progress 部分：一条干净竖直边界扫过整行，不受字形段拆分影响
+        double clipWidth;
+        if (line.HasWordTiming && TryGetWordClipWidth(line, positionMs, out var wordClip))
+        {
+            clipWidth = wordClip; // 逐字：按演唱节奏点亮
+        }
+        else
+        {
+            var duration = GetLineDuration(_currentIndex);
+            if (duration <= 0)
+                return;
+
+            var progress = Math.Clamp((positionMs - line.StartTime) / (double)duration, 0, 1);
+            if (Math.Abs(progress - _lastProgress) < 0.002)
+                return;
+            _lastProgress = progress;
+            clipWidth = width * progress; // 兜底：整行线性揭晓
+        }
+
+        if (Math.Abs(clipWidth - _lastClipWidth) < 0.5)
+            return;
+        _lastClipWidth = clipWidth;
+
+        // 亮色层只露出 0..clipWidth 部分：一条干净竖直边界扫过整行，不受字形段拆分影响
         LyricTextBright.Clip = new RectangleGeometry(
-            new Rect(0, 0, width * progress, LyricTextBright.ActualHeight));
+            new Rect(0, 0, clipWidth, LyricTextBright.ActualHeight));
+    }
+
+    /// <summary>
+    /// 逐字揭晓：找到当前演唱到的字（绝对时间二分），亮色边界 = 之前各字累计宽度 + 当前字内平滑进度。
+    /// 逐字文本与正词对不上时返回 false，由调用方回退线性揭晓。
+    /// </summary>
+    private bool TryGetWordClipWidth(LyricLine line, int positionMs, out double clipWidth)
+    {
+        clipWidth = 0;
+        var words = line.Words;
+        var boundaries = GetWordBoundaries(line);
+        if (words is null || boundaries is null || boundaries.Length != words.Count)
+            return false;
+
+        int lo = 0, hi = words.Count - 1, index = -1;
+        while (lo <= hi)
+        {
+            var mid = (lo + hi) / 2;
+            if (words[mid].StartTime <= positionMs)
+            {
+                index = mid;
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid - 1;
+            }
+        }
+
+        if (index < 0)
+            return true; // 还没唱到第一个字：不亮
+
+        var word = words[index];
+        var before = index > 0 ? boundaries[index - 1] : 0;
+        var wordWidth = boundaries[index] - before;
+        var fraction = word.EndTime > word.StartTime
+            ? Math.Clamp((positionMs - word.StartTime) / (double)(word.EndTime - word.StartTime), 0, 1)
+            : 1;
+        clipWidth = before + fraction * wordWidth;
+        return true;
+    }
+
+    /// <summary>
+    /// 计算一行里每个逐字片段结束位置对应的像素宽度（缓存按行文本复用）。
+    /// 逐字片段需能按顺序在正词里匹配到，否则返回 null 表示该行不适合逐字渲染。
+    /// </summary>
+    private double[]? GetWordBoundaries(LyricLine line)
+    {
+        var words = line.Words;
+        if (words is null || words.Count == 0)
+            return null;
+
+        if (_wordBoundaryCache.TryGetValue(line.Text, out var cached))
+            return cached;
+
+        var endChar = new int[words.Count];
+        var charPos = 0;
+        for (var i = 0; i < words.Count; i++)
+        {
+            var text = words[i].Text;
+            var found = line.Text.IndexOf(text, charPos, StringComparison.Ordinal);
+            if (found < 0)
+                return null; // 逐字文本与正词对不上，该行回退线性揭晓
+            charPos = found + text.Length;
+            endChar[i] = charPos;
+        }
+
+        var boundaries = new double[words.Count];
+        var typeface = new Typeface(
+            LyricTextBright.FontFamily,
+            LyricTextBright.FontStyle,
+            LyricTextBright.FontWeight,
+            LyricTextBright.FontStretch);
+        var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        for (var i = 0; i < words.Count; i++)
+        {
+            var prefix = line.Text.Substring(0, endChar[i]);
+            var formatted = new FormattedText(
+                prefix,
+                CultureInfo.CurrentUICulture,
+                FlowDirection.LeftToRight,
+                typeface,
+                LyricTextBright.FontSize,
+                Brushes.Black,
+                dpi);
+            boundaries[i] = formatted.WidthIncludingTrailingWhitespace;
+        }
+
+        _wordBoundaryCache[line.Text] = boundaries;
+        return boundaries;
     }
 
     /// <summary>行的持续时间：优先取 EndTime，缺省时用下一行开始时间兜底</summary>
@@ -857,6 +1125,7 @@ public partial class MainWindow
         LyricTextBright.Text = text;
         LyricTextBright.Foreground = _lyricBrush;
         LyricTextBright.Clip = null;
+        _lastClipWidth = -1;
         LyricTranslation.Text = string.Empty;
         LyricTranslation.Visibility = Visibility.Collapsed;
         ReapplyLyricDisplay();

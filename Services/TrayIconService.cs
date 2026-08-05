@@ -20,6 +20,14 @@ public sealed class TrayIconService : IDisposable
     /// <summary>请求打开日志目录（资源管理器）</summary>
     public event Action? OpenLogDirectoryRequested;
 
+    /// <summary>请求进入/退出"调整歌词位置"模式</summary>
+    public event Action? AdjustPositionRequested;
+
+    /// <summary>请求重置手动位置偏移</summary>
+    public event Action? ResetPositionRequested;
+
+    private ToolStripMenuItem? _adjustMenuItem;
+
     public TrayIconService()
     {
         _notifyIcon = new NotifyIcon
@@ -33,6 +41,9 @@ public sealed class TrayIconService : IDisposable
         menu.Items.Add("显示/隐藏歌词", null, (_, _) => ShowHideRequested?.Invoke());
         menu.Items.Add("设置", null, (_, _) => SettingsRequested?.Invoke());
         menu.Items.Add("打开日志目录", null, (_, _) => OpenLogDirectoryRequested?.Invoke());
+        _adjustMenuItem = new ToolStripMenuItem("调整歌词位置…", null, (_, _) => AdjustPositionRequested?.Invoke());
+        menu.Items.Add(_adjustMenuItem);
+        menu.Items.Add("重置歌词位置", null, (_, _) => ResetPositionRequested?.Invoke());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("退出", null, (_, _) => ExitRequested?.Invoke());
         _notifyIcon.ContextMenuStrip = menu;
@@ -56,6 +67,13 @@ public sealed class TrayIconService : IDisposable
         }
 
         return SystemIcons.Application;
+    }
+
+    /// <summary>切换"调整歌词位置"菜单项文案（调整中显示退出/取消）</summary>
+    public void SetAdjusting(bool adjusting)
+    {
+        if (_adjustMenuItem is not null)
+            _adjustMenuItem.Text = adjusting ? "完成调整（保存）" : "调整歌词位置…";
     }
 
     public void Dispose()

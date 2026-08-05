@@ -15,6 +15,8 @@ public sealed class FluentFlyoutWidgetLocator : ITaskbarWidgetLocator
     // 任务栏上需要"排到右侧"的组件进程名列表，可随时扩展
     private static readonly string[] ComponentProcessNames = ["FluentFlyout"];
 
+    public string Key => "FluentFlyout";
+
     public string Name => "FluentFlyout";
 
     [DllImport("user32.dll")]

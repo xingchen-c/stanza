@@ -59,7 +59,8 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
                         // 译文通常与正词逐行 1:1 对应；行数不一致时退回时间容差匹配
                         transLines.Count == parsed.Count
                             ? transLines[i]
-                            : MatchByTime(l.StartTime, translationMap)))
+                            : MatchByTime(l.StartTime, translationMap),
+                        l.Words))
                     .ToList();
             }
 
@@ -101,7 +102,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
                     {
                         if (!TryGetTiming(line, out var startTime, out var text, out var endTime))
                             continue;
-                        parsed.Add(new LyricLine(startTime, text, endTime));
+                        parsed.Add(new LyricLine(startTime, text, endTime, words: BuildWords(line)));
                     }
                 }
 
@@ -116,6 +117,27 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
         }
 
         return parsed;
+    }
+
+    /// <summary>从 SyllableLineInfo 提取逐字时间戳；普通行（无逐字数据）返回 null</summary>
+    private static List<LyricWord>? BuildWords(ILineInfo line)
+    {
+        if (line is not SyllableLineInfo syllable ||
+            !syllable.IsSyllable ||
+            syllable.Syllables is not { Count: > 0 } syllables)
+        {
+            return null;
+        }
+
+        var words = new List<LyricWord>(syllables.Count);
+        foreach (var s in syllables)
+        {
+            if (string.IsNullOrEmpty(s.Text) || s.EndTime <= s.StartTime)
+                continue;
+            words.Add(new LyricWord(s.Text, s.StartTime, s.EndTime));
+        }
+
+        return words.Count > 0 ? words : null;
     }
 
     /// <summary>原文是否带时间戳标记（[mm:ss] 等），用于区分"解析失败"与"纯音乐占位文案"</summary>

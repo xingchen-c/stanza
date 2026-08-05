@@ -20,4 +20,30 @@ public sealed class AppSettings
 
     /// <summary>开机自启</summary>
     public bool AutoStart { get; set; }
+
+    /// <summary>
+    /// 任务栏定位策略白名单（定位器 Key 列表）：
+    /// FluentFlyout = 贴 FluentFlyout 小组件；Independent = 独立定位（不依赖外部组件）。
+    /// 至少勾选一项；按列表顺序（固定优先级 FluentFlyout &gt; Independent）依次尝试。
+    /// </summary>
+    public List<string> TaskbarLocatorWhitelist { get; set; } = ["FluentFlyout", "Independent"];
+
+    /// <summary>
+    /// 放置方向（相对锚点组件）：
+    /// Auto = 组件在任务栏左半区 → 卡片贴其右侧，右半区 → 贴其左侧；
+    /// Right = 始终贴组件右侧；Left = 始终贴组件左侧。
+    /// </summary>
+    public string PlacementDirection { get; set; } = "Auto";
+
+    /// <summary>手动位置偏移 X（DIP，相对自动锚点区域；拖动调整后保存，0 = 不偏移）</summary>
+    public double ManualOffsetX { get; set; }
+
+    /// <summary>手动位置偏移 Y（DIP，相对自动锚点区域）</summary>
+    public double ManualOffsetY { get; set; }
+
+    /// <summary>歌词栏宽度是否自动适配定位区域（true = 跟随锚点/独立定位计算出的宽度）</summary>
+    public bool AutoCardWidth { get; set; } = true;
+
+    /// <summary>歌词栏手动宽度（DIP，仅 AutoCardWidth=false 时生效）</summary>
+    public double CardWidth { get; set; } = 600;
 }
