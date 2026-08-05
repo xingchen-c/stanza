@@ -46,6 +46,9 @@ public partial class MainWindow
     private int _switchStartedAt;                                 // 切歌检测触发时间（误判恢复用）
     private bool _switchSuspected;                                // 位置回退疑似切歌，等待 key 确认（区分拖动进度条）
     private bool _lyricsRetryPending;                             // 是否已有"未找到歌词"延迟重试在跑
+    private GlobalSystemMediaTransportControlsSessionPlaybackStatus? _lastPlaybackStatus; // 上次播放状态（去重 SMTC 重复推送）
+    private long _lastSwitchStartUtcMs;                           // 最近一次切歌开始（UTC 毫秒），与 SMTC Position 快照时间比较
+    private int _lastSwitchCompletedAt = -1;                      // 最近一次歌词就绪时刻（TickCount），识别同一轮切歌的迟到信号
     private string _marqueeSignature = string.Empty;              // 上次跑马灯签名（文本+距离+时长），避免重复重启
     private string _reapplyDiagSig = string.Empty;                // 布局诊断签名（仅变化时打印，防刷屏）
     private bool _adjustingPosition;                              // 托盘"调整歌词位置"模式（临时关闭点击穿透）
@@ -228,8 +231,76 @@ public partial class MainWindow
 
     private void OnPlaybackInfoChanged(GlobalSystemMediaTransportControlsSession sender, PlaybackInfoChangedEventArgs args)
     {
-        Dispatcher.BeginInvoke(PositionCard);
+        // [调试] 打印 SMTC 推送的播放信息（播放/暂停/停止等）
+        try
+        {
+            var info = sender.GetPlaybackInfo();
+            PrintSmtc($"PlaybackInfoChanged: Status={info.PlaybackStatus} Type={info.PlaybackType} Shuffle={info.IsShuffleActive} Repeat={info.AutoRepeatMode} Rate={info.PlaybackRate}");
+        }
+        catch (Exception ex)
+        {
+            PrintSmtc($"PlaybackInfoChanged 读取失败: {ex.Message}");
+        }
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            var session = _session;
+            if (session is null)
+                return;
+
+            GlobalSystemMediaTransportControlsSessionPlaybackStatus? status;
+            try
+            {
+                status = session.GetPlaybackInfo().PlaybackStatus;
+            }
+            catch
+            {
+                return;
+            }
+
+            // SMTC 允许重复推送同一状态（QQ 切歌同一轮会推多次），只在状态真变化时处理
+            if (status == _lastPlaybackStatus)
+            {
+                PositionCard();
+                return;
+            }
+            _lastPlaybackStatus = status;
+
+            // 切歌早期信号：旧歌停止（Stopped）→ 新歌加载（Changing），立即清旧歌词进入等待。
+            // 拖动进度条只改 Position，不会触发 PlaybackInfoChanged，天然不会误判。
+            // RecentlySwitched 排除同一轮切歌序列里迟到的重复推送（如日志里出现两轮 Stopped/Changing/Playing）。
+            if (!_switchingTrack && !RecentlySwitched() &&
+                (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Stopped ||
+                 status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Changing))
+            {
+                BeginTrackSwitch($"播放状态 {status}");
+            }
+
+            // 停止后恢复播放同一首歌（单曲循环/手动停止再播）：不是切歌，立即恢复正常显示，不等 3s 误判恢复
+            if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing &&
+                _switchingTrack && _currentKey == _switchKey && _lyrics.Lines.Count > 0)
+            {
+                AppLog.Debug("恢复播放同一首歌，取消等待状态");
+                _switchingTrack = false;
+                _currentIndex = -1;
+                _lastProgress = -1;
+                UpdateLyricDisplay(string.Empty);
+            }
+
+            PositionCard();
+        });
     }
+
+    /// <summary>[调试] 把 SMTC 事件打到控制台（Rider 运行窗口可见），同时写 Debug 输出</summary>
+    private static void PrintSmtc(string message)
+    {
+        Console.WriteLine($"[SMTC] {message}");
+        Debug.WriteLine($"[SMTC] {message}");
+    }
+
+    /// <summary>刚完成过切歌（2 秒内）：同一轮切歌序列的迟到信号（第二轮 Stopped/Changing、迟到的时长变化）应忽略</summary>
+    private bool RecentlySwitched() =>
+        _lastSwitchCompletedAt > 0 && Environment.TickCount - _lastSwitchCompletedAt < 2000;
 
     /// <summary>托盘菜单：切换卡片显隐（暂停播放时仍保持隐藏，与播放状态逻辑一致）</summary>
     private void ToggleCardVisibility()
@@ -484,6 +555,9 @@ public partial class MainWindow
         _lastEndTimeMs = -1;
         _switchingTrack = false;
         _switchSuspected = false;
+        _lastPlaybackStatus = null;
+        _lastSwitchStartUtcMs = 0;
+        _lastSwitchCompletedAt = -1;
 
         if (_session is null)
         {
@@ -500,6 +574,16 @@ public partial class MainWindow
         _session.MediaPropertiesChanged += OnMediaPropertiesChanged;
         _session.TimelinePropertiesChanged += OnTimelinePropertiesChanged;
         _session.PlaybackInfoChanged += OnPlaybackInfoChanged;
+
+        // 缓存当前播放状态，供 PlaybackInfoChanged 去重比较
+        try
+        {
+            _lastPlaybackStatus = _session.GetPlaybackInfo().PlaybackStatus;
+        }
+        catch
+        {
+            // 某些播放器不提供播放信息，忽略
+        }
 
         // 缓存当前歌曲时长，供"时长变化 = 切歌"早期信号比较
         try
@@ -548,11 +632,13 @@ public partial class MainWindow
             if (key == _currentKey)
                 return;
 
-            _switchingTrack = true;
+            // 统一走 BeginTrackSwitch 记录切换起点（Stopped/时长变化可能已触发；元数据先到时这里兜底）
+            if (!_switchingTrack)
+                BeginTrackSwitch("元数据变化");
+
             _currentKey = key;
             _currentIndex = -1;
             _lastProgress = -1;
-            SetStatus("正在获取歌词…");
             AppLog.Info($"开始加载歌词: {title} / {artist}");
 
             // 时长尽量带上，能提高 QQ 搜索的匹配准确度；拿不到也没关系
@@ -576,9 +662,29 @@ public partial class MainWindow
 
             AppLog.Info($"歌词加载完成: {result}");
             _switchingTrack = false;
+            _lastSwitchCompletedAt = Environment.TickCount;
             _currentIndex = -1;
             _lastProgress = -1;
-            SetStatus(StatusTextFor(result));
+
+            // 歌词已就绪，但 SMTC 的位置快照可能还是切歌前的旧值（新快照未到）：
+            // 此时先保留"正在获取歌词…"占位，避免加载完成后出现空白；
+            // 新快照到达后 ticker 会立即按真实位置渲染。
+            var snapshotReady = true;
+            if (result == LyricsLoadResult.Loaded && _lastSwitchStartUtcMs > 0)
+            {
+                try
+                {
+                    var timeline = session.GetTimelineProperties();
+                    snapshotReady = timeline.LastUpdatedTime.ToUnixTimeMilliseconds() >= _lastSwitchStartUtcMs;
+                }
+                catch
+                {
+                    // 读取失败按可渲染处理
+                }
+            }
+
+            if (snapshotReady)
+                SetStatus(StatusTextFor(result));
 
             // 偶发：切歌瞬间搜索失败 / QQ 接口限流。NotFound 不缓存，延迟重试一次，
             // 避免"未找到歌词"被定死整首歌（重试期间已有占位文本，无闪烁）。
@@ -623,6 +729,7 @@ public partial class MainWindow
 
             AppLog.Debug($"NotFound 重试结果: {result}");
             _switchingTrack = false;
+            _lastSwitchCompletedAt = Environment.TickCount;
             _currentIndex = -1;
             _lastProgress = -1;
             SetStatus(StatusTextFor(result));
@@ -639,7 +746,23 @@ public partial class MainWindow
 
     private void OnMediaPropertiesChanged(GlobalSystemMediaTransportControlsSession sender, MediaPropertiesChangedEventArgs args)
     {
+        // [调试] 打印 SMTC 推送的媒体元数据（歌名/歌手/专辑等）
+        _ = LogMediaPropertiesAsync(sender);
         Dispatcher.BeginInvoke(() => _ = RefreshTrackAsync());
+    }
+
+    /// <summary>[调试] 读取并打印 MediaPropertiesChanged 携带的元数据</summary>
+    private async Task LogMediaPropertiesAsync(GlobalSystemMediaTransportControlsSession sender)
+    {
+        try
+        {
+            var props = await sender.TryGetMediaPropertiesAsync();
+            PrintSmtc($"MediaPropertiesChanged: Title='{props.Title}' Artist='{props.Artist}' Album='{props.AlbumTitle}' 封面={(props.Thumbnail is null ? "无" : "有")}");
+        }
+        catch (Exception ex)
+        {
+            PrintSmtc($"MediaPropertiesChanged 读取失败: {ex.Message}");
+        }
     }
 
     /// <summary>进入"等待新歌"状态：清显示、记录触发点，并主动轮询媒体属性（MediaPropertiesChanged 可能滞后）</summary>
@@ -649,6 +772,7 @@ public partial class MainWindow
         _switchingTrack = true;
         _switchKey = _currentKey;
         _switchStartedAt = Environment.TickCount;
+        _lastSwitchStartUtcMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         _currentIndex = -1;
         _lastProgress = -1;
         SetStatus("正在获取歌词…");
@@ -758,6 +882,17 @@ public partial class MainWindow
     /// </summary>
     private void OnTimelinePropertiesChanged(GlobalSystemMediaTransportControlsSession sender, TimelinePropertiesChangedEventArgs args)
     {
+        // [调试] 打印 SMTC 推送的时间轴信息（播放位置/总时长/更新时间，QQ 音乐约每秒推一次）
+        try
+        {
+            var timeline = sender.GetTimelineProperties();
+            PrintSmtc($"TimelinePropertiesChanged: Pos={timeline.Position.TotalMilliseconds:F0}ms End={timeline.EndTime.TotalMilliseconds:F0}ms Updated={timeline.LastUpdatedTime:HH:mm:ss.fff}");
+        }
+        catch (Exception ex)
+        {
+            PrintSmtc($"TimelinePropertiesChanged 读取失败: {ex.Message}");
+        }
+
         Dispatcher.BeginInvoke(() =>
         {
             var session = _session;
@@ -774,8 +909,9 @@ public partial class MainWindow
                 return;
             }
 
-            // 前后都有有效时长且明显不同 → 切歌早期信号
-            if (_lastEndTimeMs > 0 && endMs > 0 && Math.Abs(endMs - _lastEndTimeMs) > 500 && !_switchingTrack)
+            // 前后都有有效时长且明显不同 → 切歌早期信号（歌词就绪后 2s 内的迟到时长变化不再重复触发）
+            if (_lastEndTimeMs > 0 && endMs > 0 && Math.Abs(endMs - _lastEndTimeMs) > 500 &&
+                !_switchingTrack && !RecentlySwitched())
                 BeginTrackSwitch("时长变化");
 
             if (endMs > 0)
@@ -818,6 +954,11 @@ public partial class MainWindow
         {
             return;
         }
+
+        // SMTC 的 Position 是"LastUpdatedTime 时刻"的快照：切歌刚完成时它可能还停留在
+        // 切歌前的位置，用它匹配新歌词会闪出错位行。快照时间早于切歌开始 → 先不渲染，等新快照。
+        if (_lastSwitchStartUtcMs > 0 && timeline.LastUpdatedTime.ToUnixTimeMilliseconds() < _lastSwitchStartUtcMs)
+            return;
 
         // 切歌检测（用原始位置，避免 LastUpdatedTime 滞后把位置外推虚高而漏检）：
         // 信号1：播放中位置大幅回退（>2s）→ 典型切歌行为；
