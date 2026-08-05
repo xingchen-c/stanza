@@ -3,7 +3,7 @@ using System.Windows.Forms;
 
 namespace FluentLyrics.Services;
 
-/// <summary>托盘图标服务：右键菜单提供显示/隐藏歌词、退出</summary>
+/// <summary>托盘图标服务：右键菜单提供显示/隐藏歌词、设置、打开日志目录、退出</summary>
 public sealed class TrayIconService : IDisposable
 {
     private readonly NotifyIcon _notifyIcon;
@@ -17,6 +17,9 @@ public sealed class TrayIconService : IDisposable
     /// <summary>请求打开设置窗口</summary>
     public event Action? SettingsRequested;
 
+    /// <summary>请求打开日志目录（资源管理器）</summary>
+    public event Action? OpenLogDirectoryRequested;
+
     public TrayIconService()
     {
         _notifyIcon = new NotifyIcon
@@ -29,6 +32,7 @@ public sealed class TrayIconService : IDisposable
         var menu = new ContextMenuStrip();
         menu.Items.Add("显示/隐藏歌词", null, (_, _) => ShowHideRequested?.Invoke());
         menu.Items.Add("设置", null, (_, _) => SettingsRequested?.Invoke());
+        menu.Items.Add("打开日志目录", null, (_, _) => OpenLogDirectoryRequested?.Invoke());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("退出", null, (_, _) => ExitRequested?.Invoke());
         _notifyIcon.ContextMenuStrip = menu;
@@ -48,6 +52,7 @@ public sealed class TrayIconService : IDisposable
         }
         catch
         {
+            // ignored
         }
 
         return SystemIcons.Application;

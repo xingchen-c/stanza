@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
@@ -83,9 +84,10 @@ public partial class MainWindow
         LyricHost.SizeChanged += (_, _) => ReapplyLyricDisplay();
         _taskbar.TaskbarChanged += PositionCard;
 
-        // 托盘：显示/隐藏、退出（Ctrl+Alt+Q 与 QQ 音乐快捷键冲突，已移除，退出走托盘菜单）
+        // 托盘：显示/隐藏、设置、打开日志目录、退出（Ctrl+Alt+Q 与 QQ 音乐快捷键冲突，已移除）
         _tray.ShowHideRequested += ToggleCardVisibility;
         _tray.SettingsRequested += OpenSettings;
+        _tray.OpenLogDirectoryRequested += OpenLogDirectory;
         _tray.ExitRequested += Close;
 
         // 兜底：2 秒后无论如何显示，避免定位失败时窗口一直隐藏
@@ -161,7 +163,7 @@ public partial class MainWindow
         var cardWidth = Math.Max(120, Math.Min(rightEdge - left, taskbarRect.Width - left));
         var cardHeight = Math.Max(taskbarRect.Height, 36);
 
-        Debug.WriteLine($"[FluentLyrics] 卡片 {left:F0}..{rightEdge:F0} 宽={cardWidth:F0}");
+        AppLog.Debug($"卡片 {left:F0}..{rightEdge:F0} 宽={cardWidth:F0}");
 
         // 位置/尺寸没变化就不动窗口：反复 SetWindowPos 会让分层窗口重绘，引起闪烁
         if (Math.Abs(Left - left) > 0.5 || Math.Abs(Top - taskbarRect.Top) > 0.5 ||
@@ -227,6 +229,20 @@ public partial class MainWindow
         window.ShowDialog();
     }
 
+    /// <summary>托盘菜单：用资源管理器打开日志目录，方便反馈问题时直接拷日志</summary>
+    private void OpenLogDirectory()
+    {
+        try
+        {
+            Directory.CreateDirectory(AppLog.LogDirectory);
+            Process.Start(new ProcessStartInfo(AppLog.LogDirectory) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("打开日志目录失败", ex);
+        }
+    }
+
     /// <summary>保存设置后重应用：字号/颜色/滚动速度/点击穿透</summary>
     private void ApplySettings()
     {
@@ -281,10 +297,13 @@ public partial class MainWindow
         {
             _sessionManager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
             _sessionManager.CurrentSessionChanged += (_, _) => Dispatcher.BeginInvoke(() => UpdateSession(_sessionManager.GetCurrentSession()));
+            var hasSession = _sessionManager.GetCurrentSession() is not null;
+            AppLog.Info($"SMTC 初始化成功（当前会话: {(hasSession ? "有" : "无")}）");
             UpdateSession(_sessionManager.GetCurrentSession());
         }
         catch (Exception ex)
         {
+            AppLog.Error($"SMTC 初始化失败: {ex.Message}");
             SetStatus($"SMTC 初始化失败：{ex.Message}");
         }
     }
@@ -306,6 +325,7 @@ public partial class MainWindow
 
         if (_session is null)
         {
+            AppLog.Info("SMTC 会话断开");
             _lyrics.Clear();
             _currentKey = string.Empty;
             _currentIndex = -1;
@@ -314,6 +334,7 @@ public partial class MainWindow
             return;
         }
 
+        AppLog.Info("SMTC 会话接入");
         _session.MediaPropertiesChanged += OnMediaPropertiesChanged;
         _session.TimelinePropertiesChanged += OnTimelinePropertiesChanged;
         _session.PlaybackInfoChanged += OnPlaybackInfoChanged;
@@ -352,7 +373,7 @@ public partial class MainWindow
             // 这里只等待，不更新任何状态，由轮询/后续事件重读。
             if (string.IsNullOrWhiteSpace(props.Title))
             {
-                Debug.WriteLine("[FluentLyrics] 元数据未就绪（空标题），等待轮询重读");
+                AppLog.Debug("元数据未就绪（空标题），等待轮询重读");
                 if (!_switchingTrack)
                     BeginTrackSwitch("元数据未就绪"); // 顺带启动元数据轮询，等真实歌名出现
                 return;
@@ -370,7 +391,7 @@ public partial class MainWindow
             _currentIndex = -1;
             _lastProgress = -1;
             SetStatus("正在获取歌词…");
-            Debug.WriteLine($"[FluentLyrics] 开始加载歌词: {title} / {artist}");
+            AppLog.Info($"开始加载歌词: {title} / {artist}");
 
             // 时长尽量带上，能提高 QQ 搜索的匹配准确度；拿不到也没关系
             int? durationMs = null;
@@ -391,7 +412,7 @@ public partial class MainWindow
             if (key != _currentKey)
                 return;
 
-            Debug.WriteLine($"[FluentLyrics] 歌词加载完成: {result}");
+            AppLog.Info($"歌词加载完成: {result}");
             _switchingTrack = false;
             _currentIndex = -1;
             _lastProgress = -1;
@@ -404,6 +425,7 @@ public partial class MainWindow
         }
         catch (Exception ex)
         {
+            AppLog.Error($"读取媒体信息失败: {ex.Message}");
             SetStatus($"读取媒体信息失败：{ex.Message}");
         }
     }
@@ -428,7 +450,7 @@ public partial class MainWindow
 
         try
         {
-            Debug.WriteLine($"[FluentLyrics] NotFound 延迟重试启动: {title} / {artist}");
+            AppLog.Debug($"NotFound 延迟重试启动: {title} / {artist}");
             await Task.Delay(1200);
             if (key != _currentKey || _session is null)
                 return; // 已切到别的歌 / 会话关闭，放弃本次重试
@@ -437,7 +459,7 @@ public partial class MainWindow
             if (key != _currentKey)
                 return; // 等待期间又切歌，旧结果丢弃
 
-            Debug.WriteLine($"[FluentLyrics] NotFound 重试结果: {result}");
+            AppLog.Debug($"NotFound 重试结果: {result}");
             _switchingTrack = false;
             _currentIndex = -1;
             _lastProgress = -1;
@@ -468,7 +490,7 @@ public partial class MainWindow
         _currentIndex = -1;
         _lastProgress = -1;
         SetStatus("正在获取歌词…");
-        Debug.WriteLine($"[FluentLyrics] 切歌信号触发（{reason}），等待新歌 key='{_switchKey}'");
+        AppLog.Debug($"切歌信号触发（{reason}），等待新歌 key='{_switchKey}'");
         PollForNewTrackAsync();
     }
 
@@ -482,7 +504,7 @@ public partial class MainWindow
         if (_switchSuspected)
             return;
         _switchSuspected = true;
-        Debug.WriteLine("[FluentLyrics] 位置回退疑似切歌，等待确认（区分拖动进度条）");
+        AppLog.Debug("位置回退疑似切歌，等待确认（区分拖动进度条）");
         PollForTrackConfirmationAsync();
     }
 
@@ -519,7 +541,7 @@ public partial class MainWindow
                 if (candidateKey == currentKey)
                 {
                     // 同一个新 key 连续两次读到 → 确认切歌，走完整流程
-                    Debug.WriteLine("[FluentLyrics] 位置回退确认切歌，进入切换流程");
+                    AppLog.Debug("位置回退确认切歌，进入切换流程");
                     _switchSuspected = false;
                     await RefreshTrackAsync();
                     return;
@@ -553,13 +575,13 @@ public partial class MainWindow
                 // 统一等到歌词加载完成（_switchingTrack 复位）或超时。
                 if (!_switchingTrack || _session is null)
                 {
-                    Debug.WriteLine($"[FluentLyrics] 元数据轮询结束（i={i}），switching={_switchingTrack}");
+                    AppLog.Debug($"元数据轮询结束（i={i}），switching={_switchingTrack}");
                     return; // 歌词已加载 / 误判已恢复 / 会话关闭
                 }
                 await RefreshTrackAsync();
             }
 
-            Debug.WriteLine("[FluentLyrics] 元数据轮询 4s 超时，交由 ticker 看门狗接管");
+            AppLog.Debug("元数据轮询 4s 超时，交由 ticker 看门狗接管");
         }
         catch
         {
@@ -655,7 +677,7 @@ public partial class MainWindow
             {
                 if (elapsed > 8000)
                 {
-                    Debug.WriteLine("[FluentLyrics] 看门狗：歌词加载超时 8s，复位切换状态");
+                    AppLog.Warn("看门狗：歌词加载超时 8s，复位切换状态");
                     _switchingTrack = false;
                     _currentIndex = -1;
                     _lastProgress = -1;
@@ -668,7 +690,7 @@ public partial class MainWindow
             // 3 秒内没有新歌确认 → 大概率是拖动进度条误判，恢复正常显示
             if (elapsed > 3000)
             {
-                Debug.WriteLine("[FluentLyrics] 误判恢复：3s 内未确认新歌，恢复正常显示");
+                AppLog.Debug("误判恢复：3s 内未确认新歌，恢复正常显示");
                 _switchingTrack = false;
                 _currentIndex = -1;
                 _lastProgress = -1;
@@ -856,7 +878,7 @@ public partial class MainWindow
         if (diagSig != _reapplyDiagSig)
         {
             _reapplyDiagSig = diagSig;
-            Debug.WriteLine($"[FluentLyrics] 歌词布局: host={hostWidth:F0} text={textWidth:F0} avail={availableWidth:F0} 文本='{LyricTextBright.Text}'");
+            AppLog.Debug($"歌词布局: host={hostWidth:F0} text={textWidth:F0} avail={availableWidth:F0} 文本='{LyricTextBright.Text}'");
         }
 
         // 垂直居中
@@ -893,7 +915,7 @@ public partial class MainWindow
             return;
 
         _marqueeSignature = signature;
-        Debug.WriteLine($"[FluentLyrics] 跑马灯启动: 距离={distance:F0} 时长={duration.TotalSeconds:F0}s 文本='{LyricTextBright.Text}'");
+        AppLog.Debug($"跑马灯启动: 距离={distance:F0} 时长={duration.TotalSeconds:F0}s 文本='{LyricTextBright.Text}'");
         var animation = new DoubleAnimation(0, -distance, duration)
         {
             AutoReverse = true,

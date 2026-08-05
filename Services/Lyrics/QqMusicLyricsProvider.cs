@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using FluentLyrics.Models;
 using Lyricify.Lyrics.Helpers;
 using Lyricify.Lyrics.Models;
@@ -30,7 +29,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
             if (searchResult is not QQMusicSearchResult qq)
                 return new LyricsResult(LyricsLoadResult.NotFound, []);
 
-            Debug.WriteLine($"[FluentLyrics] QQ 搜索命中: '{qq.Title}' / {string.Join(", ", qq.Artists ?? [])} / 专辑='{qq.Album}' / 时长={qq.DurationMs?.ToString() ?? "?"}ms / MatchType={qq.MatchType}");
+            AppLog.Debug($"QQ 搜索命中: '{qq.Title}' / {string.Join(", ", qq.Artists ?? [])} / 专辑='{qq.Album}' / 时长={qq.DurationMs?.ToString() ?? "?"}ms / MatchType={qq.MatchType}");
 
             // 2. 用歌曲 Id 获取解密后的歌词文本
             var response = await ProviderHelper.QQMusicApi.GetLyricsAsync(qq.Id);
@@ -39,7 +38,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
             // 搜到了歌但歌词内容为空：QQ 音乐对纯音乐就是这种表现，按纯音乐处理
             if (string.IsNullOrWhiteSpace(rawLyrics))
             {
-                Debug.WriteLine($"[FluentLyrics] 歌词内容为空（歌曲 '{qq.Title}'），按纯音乐处理");
+                AppLog.Debug($"歌词内容为空（歌曲 '{qq.Title}'），按纯音乐处理");
                 return new LyricsResult(LyricsLoadResult.Instrumental, []);
             }
 
@@ -48,7 +47,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
 
             // 4. 解析翻译（Trans 与正词同时间轴，按开始时间对齐挂到对应行）
             var translationMap = BuildTranslationMap(response?.Trans);
-            Debug.WriteLine($"[FluentLyrics] 翻译原始长度: {response?.Trans?.Length ?? 0}，翻译行数: {translationMap.Count}");
+            AppLog.Debug($"翻译原始长度: {response?.Trans?.Length ?? 0}，翻译行数: {translationMap.Count}");
             if (translationMap.Count > 0)
             {
                 var transLines = translationMap.OrderBy(kv => kv.Key).Select(kv => kv.Value).ToList();
@@ -72,15 +71,16 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
             // 2) 否则多半是纯音乐占位文案 → 按纯音乐处理。
             if (LooksLikeTimedLyrics(rawLyrics))
             {
-                Debug.WriteLine($"[FluentLyrics] 歌词含时间戳但解析失败（未知格式），原文前 200 字: {TruncateForLog(rawLyrics)}");
+                AppLog.Debug($"歌词含时间戳但解析失败（未知格式），原文前 200 字: {TruncateForLog(rawLyrics)}");
                 return new LyricsResult(LyricsLoadResult.NotFound, []);
             }
 
-            Debug.WriteLine($"[FluentLyrics] 无时间轴歌词（疑似纯音乐），服务端原文: {TruncateForLog(rawLyrics)}");
+            AppLog.Debug($"无时间轴歌词（疑似纯音乐），服务端原文: {TruncateForLog(rawLyrics)}");
             return new LyricsResult(LyricsLoadResult.Instrumental, []);
         }
-        catch
+        catch (Exception ex)
         {
+            AppLog.Error($"QQ 搜索/取词失败: {ex.Message}");
             return new LyricsResult(LyricsLoadResult.NotFound, []);
         }
     }
@@ -183,16 +183,16 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
                 var data = ParseHelper.ParseLyrics(transRaw, rawType);
                 if (data?.Lines is not null)
                 {
-                foreach (var line in data.Lines)
-                {
-                    if (TryGetTiming(line, out var start, out var text, out _) &&
-                        !string.IsNullOrWhiteSpace(text) &&
-                        !IsPlaceholderTranslation(text) &&
-                        !map.ContainsKey(start))
+                    foreach (var line in data.Lines)
                     {
-                        map[start] = text;
+                        if (TryGetTiming(line, out var start, out var text, out _) &&
+                            !string.IsNullOrWhiteSpace(text) &&
+                            !IsPlaceholderTranslation(text) &&
+                            !map.ContainsKey(start))
+                        {
+                            map[start] = text;
+                        }
                     }
-                }
                 }
             }
             catch

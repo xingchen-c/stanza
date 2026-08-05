@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
@@ -142,7 +141,11 @@ public sealed class TaskbarService : IDisposable
         }
 
         if (chosen == IntPtr.Zero)
+        {
+            if (!_hasWidgetRect && !_hasStartButtonRect)
+                AppLog.Warn("未找到任何任务栏窗口，等待下一轮轮询");
             return;
+        }
 
         // 组件暂隐（暂停/切歌过渡）时保留上次选中的任务栏与位置，避免卡片跳到别处
         if (widget is null && _hasWidgetRect)
@@ -180,6 +183,10 @@ public sealed class TaskbarService : IDisposable
             return;
 
         _layoutSignature = signature;
+        AppLog.Info($"任务栏定位更新: 任务栏=({_taskbarRect.Left},{_taskbarRect.Top},{_taskbarRect.Right},{_taskbarRect.Bottom}) " +
+                    $"组件={(_hasWidgetRect ? $"({_widgetRect.Left},{_widgetRect.Top},{_widgetRect.Right},{_widgetRect.Bottom})" : "无")} " +
+                    $"开始按钮={(_hasStartButtonRect ? $"({_startButtonRect.Left},{_startButtonRect.Top},{_startButtonRect.Right},{_startButtonRect.Bottom})" : "无")} " +
+                    $"组件可见={IsWidgetPresent}");
         TaskbarChanged?.Invoke();
     }
 
@@ -194,9 +201,9 @@ public sealed class TaskbarService : IDisposable
                 if (rect is not null)
                     return rect;
             }
-            catch
+            catch (Exception ex)
             {
-                // 单个定位器失败不影响其他
+                AppLog.Error($"组件定位器 {locator.Name} 探测失败", ex);
             }
         }
 
@@ -240,7 +247,7 @@ public sealed class TaskbarService : IDisposable
             return null;
 
         var rect = ToDips(window, _widgetRect);
-        Debug.WriteLine($"[FluentLyrics] 组件可见区域: {rect}");
+        AppLog.Debug($"组件可见区域: {rect}");
         return rect;
     }
 
@@ -251,7 +258,7 @@ public sealed class TaskbarService : IDisposable
             return null;
 
         var rect = ToDips(window, _startButtonRect);
-        Debug.WriteLine($"[FluentLyrics] 开始按钮矩形: {rect}");
+        AppLog.Debug($"开始按钮矩形: {rect}");
         return rect;
     }
 

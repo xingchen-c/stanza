@@ -33,10 +33,11 @@ public sealed class LyricsService
     {
         _lines = [];
 
-        var cacheKey = $"{title}{artist}";
+        var cacheKey = $"{title}\u0001{artist}";
         if (_cache.TryGetValue(cacheKey, out var cached))
         {
             _lines = cached.Lines;
+            AppLog.Debug($"歌词缓存命中: '{title}' / {artist}（{cached.Status}）");
             return cached.Status;
         }
 
@@ -45,24 +46,33 @@ public sealed class LyricsService
         var deadline = Task.Delay(TimeSpan.FromSeconds(8));
         foreach (var provider in _providers)
         {
+            AppLog.Debug($"尝试歌词源 {provider.Name}: '{title}' / {artist}");
             LyricsResult result;
             try
             {
                 var loadTask = provider.LoadAsync(title, artist, durationMs);
                 var completed = await Task.WhenAny(loadTask, deadline);
                 if (completed != loadTask)
+                {
+                    AppLog.Warn($"歌词源 {provider.Name} 超过总预算 8s 未返回，本轮放弃");
                     break; // 总超时：该源（及后续源）本轮不再等待，直接返回 NotFound
+                }
                 result = await loadTask;
             }
-            catch
+            catch (Exception ex)
             {
+                AppLog.Error($"歌词源 {provider.Name} 加载异常", ex);
                 continue; // 单个源失败不影响其他源
             }
 
             if (result.Status == LyricsLoadResult.NotFound)
+            {
+                AppLog.Debug($"歌词源 {provider.Name} 未找到歌词");
                 continue;
+            }
 
             _lines = result.Lines.ToList();
+            AppLog.Info($"歌词加载成功: 来源={provider.Name} 结果={result.Status} 行数={_lines.Count} 歌曲='{title}' / {artist}");
 
             // NotFound 不缓存（可能是网络抖动），Loaded/Instrumental 才缓存
             if (_cache.Count >= 20)
@@ -72,6 +82,7 @@ public sealed class LyricsService
             return result.Status;
         }
 
+        AppLog.Warn($"所有歌词源均未找到歌词: '{title}' / {artist}");
         return LyricsLoadResult.NotFound;
     }
 
