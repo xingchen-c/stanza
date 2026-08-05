@@ -107,6 +107,7 @@ public partial class MainWindow
         _tray.ShowHideRequested += ToggleCardVisibility;
         _tray.SettingsRequested += OpenSettings;
         _tray.OpenLogDirectoryRequested += OpenLogDirectory;
+        _tray.ClearCacheRequested += _lyrics.ClearCache;
         _tray.AdjustPositionRequested += ToggleAdjustPosition;
         _tray.ResetPositionRequested += ResetManualOffset;
         _tray.ExitRequested += Close;

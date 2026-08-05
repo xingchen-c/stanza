@@ -41,6 +41,17 @@ public sealed class LyricsService
             return cached.Status;
         }
 
+        // 磁盘缓存：重启后听过的歌秒出，QQ 接口挂起时也能兜底
+        if (LyricsCacheService.TryGet(cacheKey, out var diskStatus, out var diskLines))
+        {
+            _lines = diskLines;
+            if (_cache.Count >= 20)
+                _cache.Clear();
+            _cache[cacheKey] = (diskStatus, diskLines);
+            AppLog.Debug($"歌词磁盘缓存命中: '{title}' / {artist}（{diskStatus}）");
+            return diskStatus;
+        }
+
         // 总预算 8 秒：Lyricify 的 QQ 接口偶发挂起（默认 HttpClient 超时可达 100s），
         // 不能让卡死的请求把整条切歌流程拖住，超时即视为"未找到"，交给上层重试。
         var deadline = Task.Delay(TimeSpan.FromSeconds(8));
@@ -78,6 +89,7 @@ public sealed class LyricsService
             if (_cache.Count >= 20)
                 _cache.Clear(); // 简单上限，防止无限增长
             _cache[cacheKey] = (result.Status, _lines);
+            LyricsCacheService.Put(cacheKey, result.Status, _lines); // 持久化，重启不丢
 
             return result.Status;
         }
@@ -90,6 +102,14 @@ public sealed class LyricsService
     public void Clear()
     {
         _lines = new List<LyricLine>();
+    }
+
+    /// <summary>清除歌词缓存（内存 + 磁盘），排查歌词问题时用</summary>
+    public void ClearCache()
+    {
+        _cache.Clear();
+        LyricsCacheService.Clear();
+        AppLog.Info("歌词缓存已清除（内存 + 磁盘）");
     }
 
     /// <summary>
