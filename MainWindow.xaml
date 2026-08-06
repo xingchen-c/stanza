@@ -19,34 +19,93 @@
         TextOptions.TextRenderingMode="ClearType"
         TextOptions.TextFormattingMode="Ideal">
     <Grid x:Name="LyricHost" ClipToBounds="True" Margin="0">
+        <Grid.Resources>
+            <!-- 播放控制按钮：Segoe MDL2 Assets 图标，透明底，悬停微亮 -->
+            <Style x:Key="MediaButton" TargetType="Button">
+                <Setter Property="Width" Value="28" />
+                <Setter Property="Height" Value="28" />
+                <Setter Property="Margin" Value="2,0" />
+                <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
+                <Setter Property="FontSize" Value="13" />
+                <Setter Property="Foreground" Value="#BFFFFFFF" />
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Cursor" Value="Hand" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="4">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="bd" Property="Background" Value="#22FFFFFF" />
+                                    <Setter Property="Foreground" Value="White" />
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="bd" Property="Background" Value="#33FFFFFF" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+        </Grid.Resources>
+
         <Canvas>
             <!-- 双层歌词 + 翻译：暗色全文垫底，亮色层用 Clip 矩形按进度揭开（卡拉OK式）。
                  不用 LinearGradientBrush 文本前景：WPF 会按字形段（字体回退拆段）分别映射相对渐变，
                  一行里出现多条白/灰边界，字被劈开像重影。翻译固定暗色显示在正词下方（非中文歌时） -->
-            <StackPanel x:Name="LyricStack" Orientation="Vertical">
-                <StackPanel.RenderTransform>
-                    <TranslateTransform x:Name="LyricTranslate" />
-                </StackPanel.RenderTransform>
-                <StackPanel.Effect>
-                    <DropShadowEffect BlurRadius="6" ShadowDepth="1" Opacity="0.75" Color="Black" />
-                </StackPanel.Effect>
-                <Grid x:Name="LyricContent">
-                    <TextBlock x:Name="LyricTextDim"
-                               FontSize="15"
-                               Foreground="#6EFFFFFF"
-                               TextWrapping="NoWrap" />
-                    <TextBlock x:Name="LyricTextBright"
-                               FontSize="15"
-                               Foreground="White"
-                               Text="FluentLyrics 正在启动…"
-                               TextWrapping="NoWrap" />
-                </Grid>
-                <TextBlock x:Name="LyricTranslation"
-                           FontSize="12"
-                           Foreground="#8EFFFFFF"
-                           TextWrapping="NoWrap"
-                           Visibility="Collapsed" />
-            </StackPanel>
+            <!-- 歌词视口：限定在封面与按钮之间，超出部分裁剪，避免歌词滚到控制按钮下面。
+                 必须用 Canvas：Border 会约束子元素布局尺寸（歌词宽度被压扁），Canvas 不约束。 -->
+            <Canvas x:Name="LyricViewport" ClipToBounds="True">
+                <StackPanel x:Name="LyricStack" Orientation="Vertical">
+                    <StackPanel.RenderTransform>
+                        <TranslateTransform x:Name="LyricTranslate" />
+                    </StackPanel.RenderTransform>
+                    <StackPanel.Effect>
+                        <DropShadowEffect BlurRadius="6" ShadowDepth="1" Opacity="0.75" Color="Black" />
+                    </StackPanel.Effect>
+                    <Grid x:Name="LyricContent">
+                        <TextBlock x:Name="LyricTextDim"
+                                   FontSize="15"
+                                   Foreground="#6EFFFFFF"
+                                   TextWrapping="NoWrap" />
+                        <TextBlock x:Name="LyricTextBright"
+                                   FontSize="15"
+                                   Foreground="White"
+                                   Text="FluentLyrics 正在启动…"
+                                   TextWrapping="NoWrap" />
+                    </Grid>
+                    <TextBlock x:Name="LyricTranslation"
+                               FontSize="12"
+                               Foreground="#8EFFFFFF"
+                               TextWrapping="NoWrap"
+                               Visibility="Collapsed" />
+                </StackPanel>
+            </Canvas>
         </Canvas>
+
+        <!-- 媒体区：封面（左）+ 播放控制按钮组（右），歌词在中间 -->
+        <Border x:Name="CoverBorder"
+                Width="36" Height="36"
+                Margin="6,0,0,0"
+                HorizontalAlignment="Left" VerticalAlignment="Center"
+                CornerRadius="4"
+                Background="#22000000"
+                BorderBrush="#33FFFFFF" BorderThickness="1"
+                Visibility="Collapsed">
+            <Image x:Name="CoverImage" Stretch="UniformToFill" />
+        </Border>
+
+        <StackPanel x:Name="MediaControlsPanel"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right" VerticalAlignment="Center"
+                    Margin="0,0,4,0"
+                    Visibility="Collapsed">
+            <Button x:Name="PrevButton" Content="&#xE892;" Click="OnPrevClick" Style="{StaticResource MediaButton}" />
+            <Button x:Name="PlayPauseButton" Content="&#xE768;" Click="OnPlayPauseClick" Style="{StaticResource MediaButton}" />
+            <Button x:Name="NextButton" Content="&#xE893;" Click="OnNextClick" Style="{StaticResource MediaButton}" />
+        </StackPanel>
     </Grid>
 </Window>

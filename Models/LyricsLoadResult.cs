@@ -10,5 +10,5 @@ public enum LyricsLoadResult
     Instrumental,
 
     /// <summary>没搜到歌曲或获取失败</summary>
-    NotFound,
+    NotFound
 }

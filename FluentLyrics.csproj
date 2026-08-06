@@ -11,12 +11,12 @@
     </PropertyGroup>
 
     <ItemGroup>
-      <PackageReference Include="Lyricify.Lyrics.Helper" Version="0.2.0" />
-      <Resource Include="Assets\app.ico" />
+        <PackageReference Include="Lyricify.Lyrics.Helper" Version="0.2.0"/>
+        <Resource Include="Assets\app.ico"/>
 
-      <!-- WinForms 只用于托盘；去掉它带来的隐式 using，避免与 WPF 的 Application/Point 等撞名 -->
-      <Using Remove="System.Drawing" />
-      <Using Remove="System.Windows.Forms" />
+        <!-- WinForms 只用于托盘；去掉它带来的隐式 using，避免与 WPF 的 Application/Point 等撞名 -->
+        <Using Remove="System.Drawing"/>
+        <Using Remove="System.Windows.Forms"/>
     </ItemGroup>
 
 </Project>

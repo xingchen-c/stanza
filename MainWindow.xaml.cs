@@ -1,16 +1,16 @@
-using System;
+﻿using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
-using System.Windows.Interop;
-using System.Windows.Threading;
-using Windows.Media.Control;
-using System.Diagnostics;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
+using Windows.Media.Control;
 using FluentLyrics.Models;
 using FluentLyrics.Services;
 using FluentLyrics.Services.Lyrics;
@@ -21,82 +21,66 @@ namespace FluentLyrics;
 public partial class MainWindow
 {
     // ---- Win32 窗口样式常量 ----
-    private const int GWL_EXSTYLE = -20;
-    private const long WS_EX_NOACTIVATE = 0x08000000; // 不抢焦点
-    private const long WS_EX_TRANSPARENT = 0x00000020; // 鼠标点击穿透
-    private const uint SWP_NOMOVE = 0x0002;
-    private const uint SWP_NOSIZE = 0x0001;
-    private const uint SWP_NOACTIVATE = 0x0010;
-    private static readonly IntPtr HWND_TOPMOST = new(-1);
+    private const int GwlExstyle = -20;
+    private const long WsExNoactivate = 0x08000000; // 不抢焦点
+    private const long WsExTransparent = 0x00000020; // 鼠标点击穿透
+    private const int WmNchittest = 0x0084; // 命中测试：按区域决定可点击/穿透
+    private const int Httransparent = -1; // 本次点击穿透到下层窗口
+    private const int Htclient = 1; // 窗口客户区（可点击）
+    private const uint SwpNomove = 0x0002;
+    private const uint SwpNosize = 0x0001;
+    private const uint SwpNoactivate = 0x0010;
     private const double MarqueeEndPadding = 24; // 滚到最右侧时预留的空白
+    private static readonly IntPtr HwndTopmost = new(-1);
+    private readonly LyricsService _lyrics = new();
+    private readonly TaskbarService _taskbar = new();
+    private readonly DispatcherTimer _ticker = new() { Interval = TimeSpan.FromMilliseconds(100) };
+    private readonly TrayIconService _tray = new();
+    private readonly Dictionary<string, double[]> _wordBoundaryCache = new(); // 行文本 → 各字结束位置的像素宽度
+    private bool _adjustingPosition; // 托盘"调整歌词位置"模式（临时关闭点击穿透）
+    private bool _clickThrough; // 鼠标点击穿透
+    private int _currentIndex = -1;
+
+    private System.Windows.Point _dragGrabOffset; // 光标(屏幕DIP)相对窗口左上角的抓取偏移
+    private bool _dragging; // 调整模式下正在拖动卡片
+    private bool _hiddenForFullscreen; // 前台窗口全屏（游戏/视频）时隐藏卡片
+    private bool _hiddenForPlayback;
+    private HwndSource? _hwndSource; // 窗口消息钩子（WM_NCHITTEST 区域点击穿透）
+    private double _lastClipWidth = -1; // 上次裁剪宽度（逐字/线性共用去重）
+    private int _lastFullscreenCheckTick = -1000; // 全屏检测节流（每 500ms 查一次前台窗口）
+    private double _lastProgress = -1; // 上次渲染的进度（0~1）
+    private Brush _lyricBrush = Brushes.White; // 状态文本/亮色层画刷
+    private Color _lyricColor = Colors.White;
+    private Brush _lyricDimBrush = new SolidColorBrush(Color.FromArgb(110, 255, 255, 255)); // 暗色层画刷
+    private Color _lyricDimColor = Color.FromArgb(110, 255, 255, 255);
+    private string _reapplyDiagSig = string.Empty; // 布局诊断签名（仅变化时打印，防刷屏）
 
     // ---- 运行时设置（来自 AppSettings）----
     private AppSettings _settings = AppSettingsService.Load();
-    private double _marqueeSpeed = 55;   // 跑马灯速度（DIP/秒）
-    private bool _clickThrough = true;   // 鼠标点击穿透
-    private Color _lyricColor = Colors.White;
-    private Color _lyricDimColor = Color.FromArgb(110, 255, 255, 255);
-    private Brush _lyricBrush = Brushes.White;                    // 状态文本/亮色层画刷
-    private Brush _lyricDimBrush = new SolidColorBrush(Color.FromArgb(110, 255, 255, 255)); // 暗色层画刷
-    private double _lastProgress = -1;                            // 上次渲染的进度（0~1）
-    private int _lastTickPositionMs = -1;                         // 上一拍播放位置，用于切歌检测
-    private double _lastEndTimeMs = -1;                           // 上次歌曲时长（切歌早期信号）
-    private bool _switchingTrack;                                 // 正在切歌/等待新歌词
-    private string _switchKey = string.Empty;                     // 触发切歌检测时的歌曲 key
-    private int _switchStartedAt;                                 // 切歌检测触发时间（误判恢复用）
-    private bool _switchSuspected;                                // 位置回退疑似切歌，等待 key 确认（区分拖动进度条）
-    private bool _lyricsRetryPending;                             // 是否已有"未找到歌词"延迟重试在跑
-    private GlobalSystemMediaTransportControlsSessionPlaybackStatus? _lastPlaybackStatus; // 上次播放状态（去重 SMTC 重复推送）
-    private long _lastSwitchStartUtcMs;                           // 最近一次切歌开始（UTC 毫秒），与 SMTC Position 快照时间比较
-    private int _lastSwitchCompletedAt = -1;                      // 最近一次歌词就绪时刻（TickCount），识别同一轮切歌的迟到信号
-    private string _marqueeSignature = string.Empty;              // 上次跑马灯签名（文本+距离+时长），避免重复重启
-    private string _reapplyDiagSig = string.Empty;                // 布局诊断签名（仅变化时打印，防刷屏）
-    private bool _adjustingPosition;                              // 托盘"调整歌词位置"模式（临时关闭点击穿透）
-    private bool _dragging;                                       // 调整模式下正在拖动卡片
-    private Point _dragGrabOffset;                                // 光标(屏幕DIP)相对窗口左上角的抓取偏移
-    private double _lastClipWidth = -1;                           // 上次裁剪宽度（逐字/线性共用去重）
-    private readonly Dictionary<string, double[]> _wordBoundaryCache = new(); // 行文本 → 各字结束位置的像素宽度
+    private bool _showMediaControls; // 显示封面与播放控制（媒体区）
 
-    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtr")]
-    private static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
+    // 歌词文本在卡片内的起始 x（媒体模式下 = 封面宽 + 间距，纯歌词模式从 0 开始）
+    private double _textBaseLeft;
 
-    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtr")]
-    private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetCursorPos(out POINT lpPoint);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT
-    {
-        public int X;
-        public int Y;
-    }
-
-    // ---- 状态 ----
-    // 管理器必须一直持有：它是局部变量被 GC 回收后，会话事件（PlaybackInfoChanged 等）会静默丢失
-    private GlobalSystemMediaTransportControlsSessionManager? _sessionManager;
-    private GlobalSystemMediaTransportControlsSession? _session;
-    private readonly LyricsService _lyrics = new();
-    private readonly TaskbarService _taskbar = new();
-    private readonly TrayIconService _tray = new();
-    private readonly DispatcherTimer _ticker = new() { Interval = TimeSpan.FromMilliseconds(100) };
-
-    private string _currentKey = string.Empty;
-    private int _currentIndex = -1;
-    private bool _hiddenForPlayback;
+    private readonly SmptcSessionService _smtc;
 
     public MainWindow()
     {
         InitializeComponent();
-        _marqueeSpeed = _settings.MarqueeSpeed;
+        _smtc = new SmptcSessionService(Dispatcher);
         _clickThrough = _settings.ClickThrough;
+        _showMediaControls = _settings.ShowMediaControls;
+        MediaControlsPanel.Visibility = _showMediaControls ? Visibility.Visible : Visibility.Collapsed;
         ApplyLyricBrushes();
+        _smtc.SetMediaControlsEnabled(_showMediaControls);
+
+        // 订阅 SMTC 服务事件：状态/歌词/封面变化 → 刷新 UI
+        _smtc.SessionChanged += OnSessionChanged;
+        _smtc.StatusChanged += OnServiceStatus;
+        _smtc.TrackSwitchStarted += OnTrackSwitchStarted;
+        _smtc.TrackLyricsChanged += OnTrackLyricsChanged;
+        _smtc.PlaybackStatusChanged += OnServicePlaybackStatus;
+        _smtc.CoverChanged += OnCoverChanged;
 
         Loaded += OnLoaded;
         SourceInitialized += OnSourceInitialized;
@@ -110,7 +94,7 @@ public partial class MainWindow
         _tray.ShowHideRequested += ToggleCardVisibility;
         _tray.SettingsRequested += OpenSettings;
         _tray.OpenLogDirectoryRequested += OpenLogDirectory;
-        _tray.ClearCacheRequested += _lyrics.ClearCache;
+        _tray.ClearCacheRequested += _smtc.Lyrics.ClearCache;
         _tray.AdjustPositionRequested += ToggleAdjustPosition;
         _tray.ResetPositionRequested += ResetManualOffset;
         _tray.ExitRequested += Close;
@@ -134,36 +118,235 @@ public partial class MainWindow
         safetyTimer.Start();
     }
 
+    private async void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        await _smtc.InitializeAsync();
+    }
+
+    /// <summary>SMTC 会话接入/断开：刷新显隐、封面、ticker 启停与渲染状态</summary>
+    private void OnSessionChanged(bool connected)
+    {
+        _currentIndex = -1;
+        _lastProgress = -1;
+        CoverImage.Source = null;
+        CoverBorder.Visibility = Visibility.Collapsed;
+        if (connected)
+            _ticker.Start();
+        else
+            _ticker.Stop();
+        PositionCard();
+    }
+
+    /// <summary>服务状态文本（"正在获取歌词…"/"未找到歌词"/空串恢复）：更新显示并重置渲染</summary>
+    private void OnServiceStatus(string text)
+    {
+        _currentIndex = -1;
+        _lastProgress = -1;
+        UpdateLyricDisplay(text);
+    }
+
+    /// <summary>切歌开始：清掉当前渲染状态，等待新歌词</summary>
+    private void OnTrackSwitchStarted()
+    {
+        _currentIndex = -1;
+        _lastProgress = -1;
+    }
+
+    /// <summary>歌词加载完成：重置渲染状态，ticker 下一拍按位置渲染</summary>
+    private void OnTrackLyricsChanged(string key, LyricsLoadResult result)
+    {
+        _currentIndex = -1;
+        _lastProgress = -1;
+    }
+
+    /// <summary>播放状态变化：刷新播放/暂停图标与卡片显隐</summary>
+    private void OnServicePlaybackStatus(GlobalSystemMediaTransportControlsSessionPlaybackStatus? status)
+    {
+        PlayPauseButton.Content = status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing
+            ? "\uE769"
+            : "\uE768";
+        PositionCard();
+    }
+
+    /// <summary>封面就绪/变化：更新封面显示并重算歌词布局（null = 无封面/失败）</summary>
+    private void OnCoverChanged(string key, BitmapSource? source)
+    {
+        CoverImage.Source = source;
+        CoverBorder.Visibility = source is null ? Visibility.Collapsed : Visibility.Visible;
+        ReapplyLyricDisplay();
+    }
+
+    /// <summary>媒体区：上一首</summary>
+    private async void OnPrevClick(object sender, RoutedEventArgs e)
+    {
+        await _smtc.TrySkipPreviousAsync();
+    }
+
+    /// <summary>媒体区：播放/暂停</summary>
+    private async void OnPlayPauseClick(object sender, RoutedEventArgs e)
+    {
+        await _smtc.TryTogglePlayPauseAsync();
+    }
+
+    /// <summary>媒体区：下一首</summary>
+    private async void OnNextClick(object sender, RoutedEventArgs e)
+    {
+        await _smtc.TrySkipNextAsync();
+    }
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtr")]
+    private static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtr")]
+    private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetCursorPos(out Point lpPoint);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect lpRect);
+
+    [DllImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DeleteObject(IntPtr hObject);
+
     private void OnSourceInitialized(object? sender, EventArgs e)
     {
+        _hwndSource = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
+        _hwndSource?.AddHook(WndProc);
         ApplyWindowStyles();
         PositionCard();
     }
 
-    /// <summary>置顶、不抢焦点；按设置开启鼠标点击穿透</summary>
+    /// <summary>
+    ///     置顶、不抢焦点；穿透策略：
+    ///     调整位置模式 / 媒体控制模式 → 不设整窗 WS_EX_TRANSPARENT，由 WM_NCHITTEST 按区域判定
+    ///     （歌词区 HTTRANSPARENT 穿透、媒体区 HTCLIENT 可点击）；
+    ///     纯歌词模式 → 维持原有整窗 WS_EX_TRANSPARENT 穿透。
+    /// </summary>
     private void ApplyWindowStyles()
     {
         var hwnd = new WindowInteropHelper(this).Handle;
         if (hwnd == IntPtr.Zero)
             return; // 窗口句柄未就绪（设置保存可能在初始化前触发重应用）
 
-        var exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt64();
-        exStyle |= WS_EX_NOACTIVATE;
-        if (_clickThrough)
-            exStyle |= WS_EX_TRANSPARENT;
+        var exStyle = GetWindowLongPtr(hwnd, GwlExstyle).ToInt64();
+        exStyle |= WsExNoactivate;
+        if (_adjustingPosition || _showMediaControls)
+            // 区域判定模式：窗口自身不穿透，WM_NCHITTEST 负责歌词区穿透/媒体区可点
+            exStyle &= ~WsExTransparent;
+        else if (_clickThrough)
+            exStyle |= WsExTransparent;
         else
-            exStyle &= ~WS_EX_TRANSPARENT; // 调整位置模式需要接收鼠标，必须清掉点击穿透位
-        SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(exStyle));
-        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            exStyle &= ~WsExTransparent; // 调整位置模式需要接收鼠标，必须清掉点击穿透位
+
+        SetWindowLongPtr(hwnd, GwlExstyle, new IntPtr(exStyle));
+        SetWindowPos(hwnd, HwndTopmost, 0, 0, 0, 0, SwpNomove | SwpNosize | SwpNoactivate);
     }
 
-    // 歌词文本在卡片内的起始 x（卡片紧贴组件右侧，从 0 开始即可）
-    private readonly double _textBaseLeft = 0;
+    /// <summary>
+    ///     WM_NCHITTEST 区域命中：媒体控制模式下封面/按钮可点击、歌词区穿透；
+    ///     拖动调整模式下整窗可交互；关闭点击穿透时整窗可点击。
+    /// </summary>
+    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg != WmNchittest)
+            return IntPtr.Zero;
+
+        // lParam：屏幕坐标（物理像素），低 16 位 x、高 16 位 y（可能为负）
+        var x = (short)(lParam.ToInt64() & 0xFFFF);
+        var y = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
+
+        if (_adjustingPosition)
+        {
+            handled = true;
+            return new IntPtr(Htclient); // 调整模式交给 WPF 拖动逻辑
+        }
+
+        if (_showMediaControls && IsInMediaRegion(x, y))
+        {
+            handled = true;
+            return new IntPtr(Htclient); // 封面/按钮可点击
+        }
+
+        if (_clickThrough)
+        {
+            handled = true;
+            return new IntPtr(Httransparent); // 歌词区点击穿透到任务栏
+        }
+
+        return IntPtr.Zero; // 未处理：系统默认整窗可点
+    }
+
+    /// <summary>
+    ///     鼠标点（屏幕物理像素）是否落在封面或控制按钮区域。
+    ///     PointToScreen 返回物理像素坐标，与 WM_NCHITTEST 的 lParam 直接可比，避免 DIP 换算偏差。
+    /// </summary>
+    private bool IsInMediaRegion(int screenX, int screenY)
+    {
+        if (CoverBorder.Visibility == Visibility.Visible && CoverBorder.ActualWidth > 0)
+        {
+            var tl = CoverBorder.PointToScreen(new System.Windows.Point(0, 0));
+            var br = CoverBorder.PointToScreen(
+                new System.Windows.Point(CoverBorder.ActualWidth, CoverBorder.ActualHeight));
+            if (screenX >= tl.X && screenX <= br.X && screenY >= tl.Y && screenY <= br.Y)
+                return true;
+        }
+
+        if (MediaControlsPanel.Visibility == Visibility.Visible && MediaControlsPanel.ActualWidth > 0)
+        {
+            var tl = MediaControlsPanel.PointToScreen(new System.Windows.Point(0, 0));
+            var br = MediaControlsPanel.PointToScreen(
+                new System.Windows.Point(MediaControlsPanel.ActualWidth, MediaControlsPanel.ActualHeight));
+            return screenX >= tl.X && screenX <= br.X && screenY >= tl.Y && screenY <= br.Y;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    ///     前台窗口是否全屏（游戏/全屏视频）：窗口矩形完全覆盖所在屏幕。
+    ///     全屏时隐藏歌词卡片，避免置顶窗口盖在全屏内容上。
+    /// </summary>
+    private bool IsForegroundFullscreen()
+    {
+        var hwnd = GetForegroundWindow();
+        if (hwnd == IntPtr.Zero)
+            return false;
+
+        // 自己的窗口（调整位置模式等）不参与判断
+        if (hwnd == new WindowInteropHelper(this).Handle)
+            return false;
+
+        if (!GetWindowRect(hwnd, out var rect))
+            return false;
+
+        var bounds = System.Windows.Forms.Screen.FromHandle(hwnd).Bounds;
+        return rect.Left <= bounds.Left && rect.Top <= bounds.Top &&
+               rect.Right >= bounds.Right && rect.Bottom >= bounds.Bottom;
+    }
 
     private void PositionCard()
     {
         if (!_taskbar.HasTaskbar)
             return;
+
+        // 全屏应用（游戏/全屏视频）时隐藏，避免置顶窗口盖在全屏内容上
+        if (_hiddenForFullscreen)
+        {
+            if (Visibility != Visibility.Collapsed)
+                Visibility = Visibility.Collapsed;
+            return;
+        }
 
         // 暂停/停止/会话关闭时隐藏卡片（观感与 FluentFlyout 暂停消失一致）
         if (ShouldHideForPlayback())
@@ -184,6 +367,10 @@ public partial class MainWindow
         var cardWidth = _settings.AutoCardWidth
             ? Math.Max(120, card.Width)
             : Math.Max(120, _settings.CardWidth);
+        // 手动宽度 + 媒体控制开启时，保证封面(42)+按钮(~100)+最小歌词区放得下，
+        // 否则按钮被挤出、歌词在按钮下面滚（看起来像跑马灯失效）
+        if (!_settings.AutoCardWidth && _showMediaControls)
+            cardWidth = Math.Max(cardWidth, 240);
         cardWidth = Math.Min(cardWidth, taskbarRect.Width); // 不超出任务栏
         var cardHeight = Math.Max(taskbarRect.Height, 36);
 
@@ -213,94 +400,25 @@ public partial class MainWindow
     /// <summary>是否因播放状态而需要隐藏卡片；无会话或查询失败时不隐藏</summary>
     private bool ShouldHideForPlayback()
     {
-        if (_session is null)
+        if (_smtc.Session is null)
             return false;
 
         try
         {
-            var status = _session.GetPlaybackInfo().PlaybackStatus;
-            return status is GlobalSystemMediaTransportControlsSessionPlaybackStatus.Paused
-                or GlobalSystemMediaTransportControlsSessionPlaybackStatus.Stopped
-                or GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed;
+            var status = _smtc.Session.GetPlaybackInfo().PlaybackStatus;
+            // 停止/关闭始终隐藏；暂停是否隐藏由设置决定（可保持显示方便看歌词）
+            if (status is GlobalSystemMediaTransportControlsSessionPlaybackStatus.Stopped
+                or GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed)
+                return true;
+            if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Paused && _settings.HideOnPause)
+                return true;
+            return false;
         }
         catch
         {
             return false; // 查询失败时保持现状，避免误隐藏
         }
     }
-
-    private void OnPlaybackInfoChanged(GlobalSystemMediaTransportControlsSession sender, PlaybackInfoChangedEventArgs args)
-    {
-        // [调试] 打印 SMTC 推送的播放信息（播放/暂停/停止等）
-        try
-        {
-            var info = sender.GetPlaybackInfo();
-            PrintSmtc($"PlaybackInfoChanged: Status={info.PlaybackStatus} Type={info.PlaybackType} Shuffle={info.IsShuffleActive} Repeat={info.AutoRepeatMode} Rate={info.PlaybackRate}");
-        }
-        catch (Exception ex)
-        {
-            PrintSmtc($"PlaybackInfoChanged 读取失败: {ex.Message}");
-        }
-
-        Dispatcher.BeginInvoke(() =>
-        {
-            var session = _session;
-            if (session is null)
-                return;
-
-            GlobalSystemMediaTransportControlsSessionPlaybackStatus? status;
-            try
-            {
-                status = session.GetPlaybackInfo().PlaybackStatus;
-            }
-            catch
-            {
-                return;
-            }
-
-            // SMTC 允许重复推送同一状态（QQ 切歌同一轮会推多次），只在状态真变化时处理
-            if (status == _lastPlaybackStatus)
-            {
-                PositionCard();
-                return;
-            }
-            _lastPlaybackStatus = status;
-
-            // 切歌早期信号：旧歌停止（Stopped）→ 新歌加载（Changing），立即清旧歌词进入等待。
-            // 拖动进度条只改 Position，不会触发 PlaybackInfoChanged，天然不会误判。
-            // RecentlySwitched 排除同一轮切歌序列里迟到的重复推送（如日志里出现两轮 Stopped/Changing/Playing）。
-            if (!_switchingTrack && !RecentlySwitched() &&
-                (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Stopped ||
-                 status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Changing))
-            {
-                BeginTrackSwitch($"播放状态 {status}");
-            }
-
-            // 停止后恢复播放同一首歌（单曲循环/手动停止再播）：不是切歌，立即恢复正常显示，不等 3s 误判恢复
-            if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing &&
-                _switchingTrack && _currentKey == _switchKey && _lyrics.Lines.Count > 0)
-            {
-                AppLog.Debug("恢复播放同一首歌，取消等待状态");
-                _switchingTrack = false;
-                _currentIndex = -1;
-                _lastProgress = -1;
-                UpdateLyricDisplay(string.Empty);
-            }
-
-            PositionCard();
-        });
-    }
-
-    /// <summary>[调试] 把 SMTC 事件打到控制台（Rider 运行窗口可见），同时写 Debug 输出</summary>
-    private static void PrintSmtc(string message)
-    {
-        Console.WriteLine($"[SMTC] {message}");
-        Debug.WriteLine($"[SMTC] {message}");
-    }
-
-    /// <summary>刚完成过切歌（2 秒内）：同一轮切歌序列的迟到信号（第二轮 Stopped/Changing、迟到的时长变化）应忽略</summary>
-    private bool RecentlySwitched() =>
-        _lastSwitchCompletedAt > 0 && Environment.TickCount - _lastSwitchCompletedAt < 2000;
 
     /// <summary>托盘菜单：切换卡片显隐（暂停播放时仍保持隐藏，与播放状态逻辑一致）</summary>
     private void ToggleCardVisibility()
@@ -347,7 +465,7 @@ public partial class MainWindow
     {
         if (_adjustingPosition)
         {
-            ExitAdjustMode(save: true); // 再点一次 = 保存并退出
+            ExitAdjustMode(true); // 再点一次 = 保存并退出
             return;
         }
 
@@ -368,7 +486,7 @@ public partial class MainWindow
     private void ResetManualOffset()
     {
         if (_adjustingPosition)
-            ExitAdjustMode(save: false);
+            ExitAdjustMode(false);
 
         _settings.ManualOffsetX = 0;
         _settings.ManualOffsetY = 0;
@@ -410,7 +528,7 @@ public partial class MainWindow
 
         _dragging = true;
         var cursor = GetCursorPosDips();
-        _dragGrabOffset = new Point(Left - cursor.X, Top - cursor.Y);
+        _dragGrabOffset = new System.Windows.Point(Left - cursor.X, Top - cursor.Y);
         CaptureMouse();
         e.Handled = true;
     }
@@ -451,17 +569,18 @@ public partial class MainWindow
             _settings.ManualOffsetX = Left - anchor.Left;
             _settings.ManualOffsetY = Top - anchor.Top;
         }
+
         AppSettingsService.Save(_settings);
         AppLog.Info($"手动偏移已保存: X={_settings.ManualOffsetX:F1}, Y={_settings.ManualOffsetY:F1}");
     }
 
     /// <summary>光标屏幕位置（物理像素）换算成 DIP，供拖动定位使用</summary>
-    private Point GetCursorPosDips()
+    private System.Windows.Point GetCursorPosDips()
     {
         GetCursorPos(out var pt);
         var transform = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformFromDevice
                         ?? Matrix.Identity;
-        return transform.Transform(new Point(pt.X, pt.Y));
+        return transform.Transform(new System.Windows.Point(pt.X, pt.Y));
     }
 
     private void OnAdjustMouseRightDown(object sender, MouseButtonEventArgs e)
@@ -470,15 +589,15 @@ public partial class MainWindow
             return;
 
         e.Handled = true;
-        ExitAdjustMode(save: true); // 右键 = 保存并退出
+        ExitAdjustMode(true); // 右键 = 保存并退出
     }
 
-    /// <summary>保存设置后重应用：字号/颜色/滚动速度/点击穿透</summary>
+    /// <summary>保存设置后重应用：字号/颜色/点击穿透/媒体区等</summary>
     private void ApplySettings()
     {
         _taskbar.ApplySettings(_settings);
-        _marqueeSpeed = _settings.MarqueeSpeed;
         _clickThrough = _settings.ClickThrough;
+        _showMediaControls = _settings.ShowMediaControls;
         ApplyLyricBrushes();
         _wordBoundaryCache.Clear(); // 字号可能变化，逐字宽度缓存作废
         _lastClipWidth = -1;
@@ -487,10 +606,22 @@ public partial class MainWindow
         LyricTranslation.FontSize = Math.Max(10, _settings.FontSize - 3);
         LyricTextBright.Foreground = _lyricBrush;
         LyricTextDim.Foreground = _lyricDimBrush;
+
+        // 媒体区开关：通知服务（封面加载开关），UI 侧隐藏/恢复封面与按钮
+        _smtc.SetMediaControlsEnabled(_showMediaControls);
+        MediaControlsPanel.Visibility = _showMediaControls ? Visibility.Visible : Visibility.Collapsed;
+        if (!_showMediaControls)
+        {
+            CoverImage.Source = null;
+            CoverBorder.Visibility = Visibility.Collapsed;
+        }
+
         ApplyWindowStyles(); // 更新点击穿透需要重设窗口扩展样式
         _currentIndex = -1;
         _lastProgress = -1;
+        PositionCard(); // 布局变化（封面/按钮占位）重新计算卡片与歌词可用宽度
         ReapplyLyricDisplay(); // 下一拍（100ms 内）会用新颜色重绘当前行
+        _ = _smtc.RefreshTrackAsync(); // 开启媒体区后立即补一次封面
     }
 
     /// <summary>根据设置颜色生成亮/暗两色（供双层文本与状态文本使用）</summary>
@@ -524,414 +655,32 @@ public partial class MainWindow
             Visibility = Visibility.Visible;
     }
 
-    private async void OnLoaded(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            _sessionManager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-            _sessionManager.CurrentSessionChanged += (_, _) => Dispatcher.BeginInvoke(() => UpdateSession(_sessionManager.GetCurrentSession()));
-            var hasSession = _sessionManager.GetCurrentSession() is not null;
-            AppLog.Info($"SMTC 初始化成功（当前会话: {(hasSession ? "有" : "无")}）");
-            UpdateSession(_sessionManager.GetCurrentSession());
-        }
-        catch (Exception ex)
-        {
-            AppLog.Error($"SMTC 初始化失败: {ex.Message}");
-            SetStatus($"SMTC 初始化失败：{ex.Message}");
-        }
-    }
-
-    private void UpdateSession(GlobalSystemMediaTransportControlsSession? session)
-    {
-        if (_session is not null)
-        {
-            _session.MediaPropertiesChanged -= OnMediaPropertiesChanged;
-            _session.TimelinePropertiesChanged -= OnTimelinePropertiesChanged;
-            _session.PlaybackInfoChanged -= OnPlaybackInfoChanged;
-        }
-
-        _session = session;
-        _lastTickPositionMs = -1;
-        _lastEndTimeMs = -1;
-        _switchingTrack = false;
-        _switchSuspected = false;
-        _lastPlaybackStatus = null;
-        _lastSwitchStartUtcMs = 0;
-        _lastSwitchCompletedAt = -1;
-
-        if (_session is null)
-        {
-            AppLog.Info("SMTC 会话断开");
-            _lyrics.Clear();
-            _currentKey = string.Empty;
-            _currentIndex = -1;
-            _ticker.Stop();
-            SetStatus("未检测到播放会话。请先播放 QQ 音乐（需在设置中开启 SMTC）。");
-            return;
-        }
-
-        AppLog.Info("SMTC 会话接入");
-        _session.MediaPropertiesChanged += OnMediaPropertiesChanged;
-        _session.TimelinePropertiesChanged += OnTimelinePropertiesChanged;
-        _session.PlaybackInfoChanged += OnPlaybackInfoChanged;
-
-        // 缓存当前播放状态，供 PlaybackInfoChanged 去重比较
-        try
-        {
-            _lastPlaybackStatus = _session.GetPlaybackInfo().PlaybackStatus;
-        }
-        catch
-        {
-            // 某些播放器不提供播放信息，忽略
-        }
-
-        // 缓存当前歌曲时长，供"时长变化 = 切歌"早期信号比较
-        try
-        {
-            var endMs = _session.GetTimelineProperties().EndTime.TotalMilliseconds;
-            if (endMs > 0)
-                _lastEndTimeMs = endMs;
-        }
-        catch
-        {
-            // 某些播放器不提供时长，忽略
-        }
-
-        PositionCard(); // 新会话接入后立即按播放状态刷新一次显隐
-
-        _ticker.Start();
-        _ = RefreshTrackAsync();
-    }
-
-    /// <summary>切歌时读取歌曲信息，若和上次不同则重新搜索歌词</summary>
-    private async Task RefreshTrackAsync()
-    {
-        var session = _session;
-        if (session is null)
-            return;
-
-        try
-        {
-            var props = await session.TryGetMediaPropertiesAsync();
-
-            // 切歌瞬间 SMTC 元数据可能短暂为空：不能把空值当成"未知歌曲"去搜索，
-            // 否则会污染当前歌曲 key，并让轮询误以为"新歌已确认"而提前终止。
-            // 这里只等待，不更新任何状态，由轮询/后续事件重读。
-            if (string.IsNullOrWhiteSpace(props.Title))
-            {
-                AppLog.Debug("元数据未就绪（空标题），等待轮询重读");
-                if (!_switchingTrack)
-                    BeginTrackSwitch("元数据未就绪"); // 顺带启动元数据轮询，等真实歌名出现
-                return;
-            }
-
-            var title = props.Title;
-            var artist = props.Artist ?? string.Empty;
-
-            var key = $"{title}\u0001{artist}";
-            if (key == _currentKey)
-                return;
-
-            // 统一走 BeginTrackSwitch 记录切换起点（Stopped/时长变化可能已触发；元数据先到时这里兜底）
-            if (!_switchingTrack)
-                BeginTrackSwitch("元数据变化");
-
-            _currentKey = key;
-            _currentIndex = -1;
-            _lastProgress = -1;
-            AppLog.Info($"开始加载歌词: {title} / {artist}");
-
-            // 时长尽量带上，能提高 QQ 搜索的匹配准确度；拿不到也没关系
-            int? durationMs = null;
-            try
-            {
-                var endTime = session.GetTimelineProperties().EndTime;
-                if (endTime > TimeSpan.Zero)
-                    durationMs = (int)endTime.TotalMilliseconds;
-            }
-            catch
-            {
-                // 某些播放器不提供时长，忽略
-            }
-
-            var result = await _lyrics.LoadAsync(title, artist, durationMs);
-
-            // 等待期间可能已经切到下一首歌，旧结果直接丢弃
-            if (key != _currentKey)
-                return;
-
-            AppLog.Info($"歌词加载完成: {result}");
-            _switchingTrack = false;
-            _lastSwitchCompletedAt = Environment.TickCount;
-            _currentIndex = -1;
-            _lastProgress = -1;
-
-            // 歌词已就绪，但 SMTC 的位置快照可能还是切歌前的旧值（新快照未到）：
-            // 此时先保留"正在获取歌词…"占位，避免加载完成后出现空白；
-            // 新快照到达后 ticker 会立即按真实位置渲染。
-            var snapshotReady = true;
-            if (result == LyricsLoadResult.Loaded && _lastSwitchStartUtcMs > 0)
-            {
-                try
-                {
-                    var timeline = session.GetTimelineProperties();
-                    snapshotReady = timeline.LastUpdatedTime.ToUnixTimeMilliseconds() >= _lastSwitchStartUtcMs;
-                }
-                catch
-                {
-                    // 读取失败按可渲染处理
-                }
-            }
-
-            if (snapshotReady)
-                SetStatus(StatusTextFor(result));
-
-            // 偶发：切歌瞬间搜索失败 / QQ 接口限流。NotFound 不缓存，延迟重试一次，
-            // 避免"未找到歌词"被定死整首歌（重试期间已有占位文本，无闪烁）。
-            if (result == LyricsLoadResult.NotFound)
-                RetryLoadLyricsAsync(key, title, artist, durationMs);
-        }
-        catch (Exception ex)
-        {
-            AppLog.Error($"读取媒体信息失败: {ex.Message}");
-            SetStatus($"读取媒体信息失败：{ex.Message}");
-        }
-    }
-
-    /// <summary>歌词加载结果的占位文案</summary>
-    private static string StatusTextFor(LyricsLoadResult result) => result switch
-    {
-        LyricsLoadResult.Loaded => string.Empty,
-        LyricsLoadResult.Instrumental => "此歌曲为没有填词的纯音乐，请您欣赏",
-        _ => "未找到歌词",
-    };
-
     /// <summary>
-    /// "未找到歌词"的延迟重试：切歌瞬间 QQ 搜索偶发失败（元数据刚就绪 / 接口限流），
-    /// 1.2 秒后重试一次；期间保持"未找到歌词"占位，重试成功会直接刷新显示。
-    /// </summary>
-    private async void RetryLoadLyricsAsync(string key, string title, string artist, int? durationMs)
-    {
-        if (_lyricsRetryPending)
-            return;
-        _lyricsRetryPending = true;
-
-        try
-        {
-            AppLog.Debug($"NotFound 延迟重试启动: {title} / {artist}");
-            await Task.Delay(1200);
-            if (key != _currentKey || _session is null)
-                return; // 已切到别的歌 / 会话关闭，放弃本次重试
-
-            var result = await _lyrics.LoadAsync(title, artist, durationMs);
-            if (key != _currentKey)
-                return; // 等待期间又切歌，旧结果丢弃
-
-            AppLog.Debug($"NotFound 重试结果: {result}");
-            _switchingTrack = false;
-            _lastSwitchCompletedAt = Environment.TickCount;
-            _currentIndex = -1;
-            _lastProgress = -1;
-            SetStatus(StatusTextFor(result));
-        }
-        catch
-        {
-            // 重试失败保持现状（"未找到歌词"），不影响事件驱动路径
-        }
-        finally
-        {
-            _lyricsRetryPending = false;
-        }
-    }
-
-    private void OnMediaPropertiesChanged(GlobalSystemMediaTransportControlsSession sender, MediaPropertiesChangedEventArgs args)
-    {
-        // [调试] 打印 SMTC 推送的媒体元数据（歌名/歌手/专辑等）
-        _ = LogMediaPropertiesAsync(sender);
-        Dispatcher.BeginInvoke(() => _ = RefreshTrackAsync());
-    }
-
-    /// <summary>[调试] 读取并打印 MediaPropertiesChanged 携带的元数据</summary>
-    private async Task LogMediaPropertiesAsync(GlobalSystemMediaTransportControlsSession sender)
-    {
-        try
-        {
-            var props = await sender.TryGetMediaPropertiesAsync();
-            PrintSmtc($"MediaPropertiesChanged: Title='{props.Title}' Artist='{props.Artist}' Album='{props.AlbumTitle}' 封面={(props.Thumbnail is null ? "无" : "有")}");
-        }
-        catch (Exception ex)
-        {
-            PrintSmtc($"MediaPropertiesChanged 读取失败: {ex.Message}");
-        }
-    }
-
-    /// <summary>进入"等待新歌"状态：清显示、记录触发点，并主动轮询媒体属性（MediaPropertiesChanged 可能滞后）</summary>
-    private void BeginTrackSwitch(string reason)
-    {
-        _switchSuspected = false;
-        _switchingTrack = true;
-        _switchKey = _currentKey;
-        _switchStartedAt = Environment.TickCount;
-        _lastSwitchStartUtcMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        _currentIndex = -1;
-        _lastProgress = -1;
-        SetStatus("正在获取歌词…");
-        AppLog.Debug($"切歌信号触发（{reason}），等待新歌 key='{_switchKey}'");
-        PollForNewTrackAsync();
-    }
-
-    /// <summary>
-    /// 播放位置大幅回退但时长未变：可能是真切歌（两首歌同时长），也可能是向后拖动进度条。
-    /// 不立即清显示/显示"正在获取歌词…"，先静默轮询确认歌曲 key 真的变化（且连续两次稳定）再切换，
-    /// 避免拖进度条时闪"正在获取歌词…"或触发多余的歌词请求。
-    /// </summary>
-    private void SuspectTrackSwitch()
-    {
-        if (_switchSuspected)
-            return;
-        _switchSuspected = true;
-        AppLog.Debug("位置回退疑似切歌，等待确认（区分拖动进度条）");
-        PollForTrackConfirmationAsync();
-    }
-
-    /// <summary>疑似切歌确认：连续两次读到同一个新 key 才算确认，之后走完整切换流程；否则静默作罢</summary>
-    private async void PollForTrackConfirmationAsync()
-    {
-        try
-        {
-            string? candidateKey = null;
-            for (var i = 0; i < 10; i++) // 最多 2 秒
-            {
-                await Task.Delay(200);
-                if (!_switchSuspected || _session is null || _switchingTrack)
-                    return; // 怀疑被取消 / 会话关闭 / 已被时长变化路径接管
-
-                string? currentKey = null;
-                try
-                {
-                    var props = await _session.TryGetMediaPropertiesAsync();
-                    if (!string.IsNullOrWhiteSpace(props.Title))
-                        currentKey = $"{props.Title}\u0001{props.Artist ?? string.Empty}";
-                }
-                catch
-                {
-                    // 读取失败继续等下一轮
-                }
-
-                if (currentKey is null || currentKey == _currentKey)
-                {
-                    candidateKey = null; // 元数据未就绪 / 仍是旧歌 → 重置候选
-                    continue;
-                }
-
-                if (candidateKey == currentKey)
-                {
-                    // 同一个新 key 连续两次读到 → 确认切歌，走完整流程
-                    AppLog.Debug("位置回退确认切歌，进入切换流程");
-                    _switchSuspected = false;
-                    await RefreshTrackAsync();
-                    return;
-                }
-
-                candidateKey = currentKey;
-            }
-        }
-        catch
-        {
-            // 确认失败不影响事件驱动路径
-        }
-        finally
-        {
-            _switchSuspected = false;
-        }
-    }
-
-    /// <summary>
-    /// 切歌早期信号已触发，但 MediaPropertiesChanged 事件可能滞后几百毫秒：
-    /// 主动轮询媒体属性，歌名/歌手一变就立即开始搜歌词。key 未变时 RefreshTrackAsync 会直接返回。
-    /// </summary>
-    private async void PollForNewTrackAsync()
-    {
-        try
-        {
-            for (var i = 0; i < 20; i++)
-            {
-                await Task.Delay(200);
-                // 不再以"key 已变化"作为退出条件：空元数据会误报"新歌已确认"导致轮询提前终止。
-                // 统一等到歌词加载完成（_switchingTrack 复位）或超时。
-                if (!_switchingTrack || _session is null)
-                {
-                    AppLog.Debug($"元数据轮询结束（i={i}），switching={_switchingTrack}");
-                    return; // 歌词已加载 / 误判已恢复 / 会话关闭
-                }
-                await RefreshTrackAsync();
-            }
-
-            AppLog.Debug("元数据轮询 4s 超时，交由 ticker 看门狗接管");
-        }
-        catch
-        {
-            // 轮询失败不影响事件驱动路径
-        }
-    }
-
-    /// <summary>
-    /// 切歌时 SMTC 几乎必然先推送新的时长（不同歌曲时长基本不同），
-    /// 比"位置回退"信号到得更早：时长一变立即清掉旧歌词进入等待状态，由 RefreshTrackAsync 确认。
-    /// 拖动进度条不会改变时长，不会误触发；时长偶发为 0 时不更新缓存也不触发。
-    /// </summary>
-    private void OnTimelinePropertiesChanged(GlobalSystemMediaTransportControlsSession sender, TimelinePropertiesChangedEventArgs args)
-    {
-        // [调试] 打印 SMTC 推送的时间轴信息（播放位置/总时长/更新时间，QQ 音乐约每秒推一次）
-        try
-        {
-            var timeline = sender.GetTimelineProperties();
-            PrintSmtc($"TimelinePropertiesChanged: Pos={timeline.Position.TotalMilliseconds:F0}ms End={timeline.EndTime.TotalMilliseconds:F0}ms Updated={timeline.LastUpdatedTime:HH:mm:ss.fff}");
-        }
-        catch (Exception ex)
-        {
-            PrintSmtc($"TimelinePropertiesChanged 读取失败: {ex.Message}");
-        }
-
-        Dispatcher.BeginInvoke(() =>
-        {
-            var session = _session;
-            if (session is null)
-                return;
-
-            double endMs;
-            try
-            {
-                endMs = session.GetTimelineProperties().EndTime.TotalMilliseconds;
-            }
-            catch
-            {
-                return;
-            }
-
-            // 前后都有有效时长且明显不同 → 切歌早期信号（歌词就绪后 2s 内的迟到时长变化不再重复触发）
-            if (_lastEndTimeMs > 0 && endMs > 0 && Math.Abs(endMs - _lastEndTimeMs) > 500 &&
-                !_switchingTrack && !RecentlySwitched())
-                BeginTrackSwitch("时长变化");
-
-            if (endMs > 0)
-                _lastEndTimeMs = endMs;
-        });
-    }
-
-    /// <summary>
-    /// 定时器：每拍检查播放状态驱动显隐；检测切歌（播放中位置大幅回退到开头）时立即
-    /// 清掉旧歌词显示"正在获取歌词…"，避免新歌开头还闪上一首歌的歌词。
+    ///     定时器：每拍检查播放状态驱动显隐；检测切歌（播放中位置大幅回退到开头）时立即
+    ///     清掉旧歌词显示"正在获取歌词…"，避免新歌开头还闪上一首歌的歌词。
     /// </summary>
     private void OnTickerTick(object? sender, EventArgs e)
     {
-        var session = _session;
+        var session = _smtc.Session;
         if (session is null)
             return;
 
         // 调整位置模式下不渲染歌词进度，避免卡拉OK裁剪盖住提示文字
         if (_adjustingPosition)
             return;
+
+        // 全屏应用（游戏/全屏视频）检测：每 500ms 查一次前台窗口，全屏时隐藏卡片
+        var now = Environment.TickCount;
+        if (now - _lastFullscreenCheckTick > 500)
+        {
+            _lastFullscreenCheckTick = now;
+            var fullscreen = IsForegroundFullscreen();
+            if (fullscreen != _hiddenForFullscreen)
+            {
+                _hiddenForFullscreen = fullscreen;
+                PositionCard();
+            }
+        }
 
         // 播放状态变化 → 立即刷新卡片显隐（PlaybackInfoChanged 事件之外的 100ms 兜底）
         var hide = ShouldHideForPlayback();
@@ -941,12 +690,14 @@ public partial class MainWindow
             PositionCard();
         }
 
-        GlobalSystemMediaTransportControlsSessionTimelineProperties timeline;
+        GlobalSystemMediaTransportControlsSessionTimelineProperties? timeline;
         int rawPositionMs;
         int positionMs;
         try
         {
-            timeline = session.GetTimelineProperties();
+            timeline = _smtc.GetTimeline();
+            if (timeline is null)
+                return;
             rawPositionMs = (int)timeline.Position.TotalMilliseconds;
             positionMs = GetPositionMs(timeline, session);
         }
@@ -957,63 +708,25 @@ public partial class MainWindow
 
         // SMTC 的 Position 是"LastUpdatedTime 时刻"的快照：切歌刚完成时它可能还停留在
         // 切歌前的位置，用它匹配新歌词会闪出错位行。快照时间早于切歌开始 → 先不渲染，等新快照。
-        if (_lastSwitchStartUtcMs > 0 && timeline.LastUpdatedTime.ToUnixTimeMilliseconds() < _lastSwitchStartUtcMs)
+        if (_smtc.LastSwitchStartUtcMs > 0 &&
+            timeline.LastUpdatedTime.ToUnixTimeMilliseconds() < _smtc.LastSwitchStartUtcMs)
             return;
 
-        // 切歌检测（用原始位置，避免 LastUpdatedTime 滞后把位置外推虚高而漏检）：
-        // 信号1：播放中位置大幅回退（>2s）→ 典型切歌行为；
-        // 但向后拖动进度条也会大幅回退，所以只进入"怀疑"状态，确认 key 变了才真正切歌。
-        // 注意：不要按"位置超出歌词末尾"判切歌——尾奏（最后一句唱完到歌曲结束）期间
-        // 位置必然超出歌词末尾，会误判；"切歌但位置未回退"由 EndTime 变化信号覆盖。
-        var jumpedBack = _lastTickPositionMs >= 0 && rawPositionMs < _lastTickPositionMs - 2000;
+        // 切歌状态机（位置回退检测、误判恢复、看门狗）统一由服务管理
+        _smtc.NotifyPlaybackPosition(rawPositionMs);
 
-        // 已在等待新歌时不重复进入：否则每拍都重置恢复计时，误判兜底永远触发不了
-        if (jumpedBack && !_switchingTrack)
-        {
-            SuspectTrackSwitch();
-        }
-        _lastTickPositionMs = rawPositionMs;
-
-        if (_switchingTrack)
-        {
-            var elapsed = Environment.TickCount - _switchStartedAt;
-
-            // 新歌已确认（key 已变化）→ 保持占位，等歌词加载完成；
-            // 超过 8 秒仍未完成（QQ 接口偶发挂起）→ 看门狗强制复位，后台加载完成会自行刷新。
-            if (_currentKey != _switchKey)
-            {
-                if (elapsed > 8000)
-                {
-                    AppLog.Warn("看门狗：歌词加载超时 8s，复位切换状态");
-                    _switchingTrack = false;
-                    _currentIndex = -1;
-                    _lastProgress = -1;
-                    if (_lyrics.Lines.Count == 0)
-                        UpdateLyricDisplay(string.Empty); // 清掉"正在获取歌词…"占位
-                }
-                return;
-            }
-
-            // 3 秒内没有新歌确认 → 大概率是拖动进度条误判，恢复正常显示
-            if (elapsed > 3000)
-            {
-                AppLog.Debug("误判恢复：3s 内未确认新歌，恢复正常显示");
-                _switchingTrack = false;
-                _currentIndex = -1;
-                _lastProgress = -1;
-                if (_lyrics.Lines.Count == 0)
-                    UpdateLyricDisplay(string.Empty); // 清掉"正在获取歌词…"占位
-            }
+        // 等待新歌歌词时不渲染，占位由 StatusChanged 事件驱动
+        if (_smtc.IsSwitchingTrack)
             return;
-        }
 
-        if (_lyrics.Lines.Count == 0)
+        var lines = _smtc.Lyrics.Lines;
+        if (lines.Count == 0)
             return;
 
         int index;
         try
         {
-            index = _lyrics.GetLineIndexAt(positionMs);
+            index = _smtc.Lyrics.GetLineIndexAt(positionMs);
         }
         catch
         {
@@ -1039,302 +752,7 @@ public partial class MainWindow
             return;
         }
 
-        ShowLyricLine(_lyrics.Lines[index], positionMs);
-    }
-
-    /// <summary>渲染当前歌词行：暗色全文垫底，亮色层用 Clip 按进度从左揭开</summary>
-    private void ShowLyricLine(LyricLine line, int positionMs)
-    {
-        LyricTextDim.Text = line.Text;
-        LyricTextDim.Foreground = _lyricDimBrush;
-        LyricTextBright.Text = line.Text;
-        LyricTextBright.Foreground = _lyricBrush;
-
-        // 非中文歌词且有翻译 → 双行显示；中文歌/无翻译保持单行
-        var translation = ShouldShowTranslation(line) ? line.Translation : null;
-        LyricTranslation.Text = translation ?? string.Empty;
-        LyricTranslation.Visibility = string.IsNullOrEmpty(translation)
-            ? Visibility.Collapsed
-            : Visibility.Visible;
-
-        _lastProgress = -1;
-        LyricTextBright.Clip = null; // 清掉上一行的裁剪，避免行时长缺失时残留旧边界
-        _lastClipWidth = -1;
-        ReapplyLyricDisplay(); // 先完成布局，UpdateLyricProgress 需要文本实际宽度
-        UpdateLyricProgress(positionMs);
-    }
-
-    /// <summary>
-    /// 是否显示翻译：数据驱动——QQ 提供了译文且译文与正词不同才显示。
-    /// 不猜歌词语言：中文歌 QQ 一般不返回译文（或返回相同文本），会自动跳过；任何语言通用。
-    /// </summary>
-    private static bool ShouldShowTranslation(LyricLine line)
-    {
-        if (string.IsNullOrWhiteSpace(line.Translation))
-            return false;
-
-        // QQ 翻译里的 "//" 占位（无翻译），不显示
-        if (string.Equals(line.Translation.Trim(), "//", StringComparison.Ordinal))
-            return false;
-
-        return !string.Equals(line.Translation.Trim(), line.Text.Trim(), StringComparison.Ordinal);
-    }
-
-    /// <summary>按连续进度右移亮色层的 Clip 右缘（0~1），只在明显变化时更新</summary>
-    private void UpdateLyricProgress(int positionMs)
-    {
-        if (_currentIndex < 0 || _currentIndex >= _lyrics.Lines.Count)
-            return;
-
-        var line = _lyrics.Lines[_currentIndex];
-        var width = LyricTextBright.ActualWidth;
-        if (width <= 0)
-            return;
-
-        double clipWidth;
-        if (line.HasWordTiming && TryGetWordClipWidth(line, positionMs, out var wordClip))
-        {
-            clipWidth = wordClip; // 逐字：按演唱节奏点亮
-        }
-        else
-        {
-            var duration = GetLineDuration(_currentIndex);
-            if (duration <= 0)
-                return;
-
-            var progress = Math.Clamp((positionMs - line.StartTime) / (double)duration, 0, 1);
-            if (Math.Abs(progress - _lastProgress) < 0.002)
-                return;
-            _lastProgress = progress;
-            clipWidth = width * progress; // 兜底：整行线性揭晓
-        }
-
-        if (Math.Abs(clipWidth - _lastClipWidth) < 0.5)
-            return;
-        _lastClipWidth = clipWidth;
-
-        // 亮色层只露出 0..clipWidth 部分：一条干净竖直边界扫过整行，不受字形段拆分影响
-        LyricTextBright.Clip = new RectangleGeometry(
-            new Rect(0, 0, clipWidth, LyricTextBright.ActualHeight));
-    }
-
-    /// <summary>
-    /// 逐字揭晓：找到当前演唱到的字（绝对时间二分），亮色边界 = 之前各字累计宽度 + 当前字内平滑进度。
-    /// 逐字文本与正词对不上时返回 false，由调用方回退线性揭晓。
-    /// </summary>
-    private bool TryGetWordClipWidth(LyricLine line, int positionMs, out double clipWidth)
-    {
-        clipWidth = 0;
-        var words = line.Words;
-        var boundaries = GetWordBoundaries(line);
-        if (words is null || boundaries is null || boundaries.Length != words.Count)
-            return false;
-
-        int lo = 0, hi = words.Count - 1, index = -1;
-        while (lo <= hi)
-        {
-            var mid = (lo + hi) / 2;
-            if (words[mid].StartTime <= positionMs)
-            {
-                index = mid;
-                lo = mid + 1;
-            }
-            else
-            {
-                hi = mid - 1;
-            }
-        }
-
-        if (index < 0)
-            return true; // 还没唱到第一个字：不亮
-
-        var word = words[index];
-        var before = index > 0 ? boundaries[index - 1] : 0;
-        var wordWidth = boundaries[index] - before;
-        var fraction = word.EndTime > word.StartTime
-            ? Math.Clamp((positionMs - word.StartTime) / (double)(word.EndTime - word.StartTime), 0, 1)
-            : 1;
-        clipWidth = before + fraction * wordWidth;
-        return true;
-    }
-
-    /// <summary>
-    /// 计算一行里每个逐字片段结束位置对应的像素宽度（缓存按行文本复用）。
-    /// 逐字片段需能按顺序在正词里匹配到，否则返回 null 表示该行不适合逐字渲染。
-    /// </summary>
-    private double[]? GetWordBoundaries(LyricLine line)
-    {
-        var words = line.Words;
-        if (words is null || words.Count == 0)
-            return null;
-
-        if (_wordBoundaryCache.TryGetValue(line.Text, out var cached))
-            return cached;
-
-        var endChar = new int[words.Count];
-        var charPos = 0;
-        for (var i = 0; i < words.Count; i++)
-        {
-            var text = words[i].Text;
-            var found = line.Text.IndexOf(text, charPos, StringComparison.Ordinal);
-            if (found < 0)
-                return null; // 逐字文本与正词对不上，该行回退线性揭晓
-            charPos = found + text.Length;
-            endChar[i] = charPos;
-        }
-
-        var boundaries = new double[words.Count];
-        var typeface = new Typeface(
-            LyricTextBright.FontFamily,
-            LyricTextBright.FontStyle,
-            LyricTextBright.FontWeight,
-            LyricTextBright.FontStretch);
-        var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
-        for (var i = 0; i < words.Count; i++)
-        {
-            var prefix = line.Text.Substring(0, endChar[i]);
-            var formatted = new FormattedText(
-                prefix,
-                CultureInfo.CurrentUICulture,
-                FlowDirection.LeftToRight,
-                typeface,
-                LyricTextBright.FontSize,
-                Brushes.Black,
-                dpi);
-            boundaries[i] = formatted.WidthIncludingTrailingWhitespace;
-        }
-
-        _wordBoundaryCache[line.Text] = boundaries;
-        return boundaries;
-    }
-
-    /// <summary>行的持续时间：优先取 EndTime，缺省时用下一行开始时间兜底</summary>
-    private int GetLineDuration(int index)
-    {
-        var lines = _lyrics.Lines;
-        if (index < 0 || index >= lines.Count)
-            return 0;
-
-        var line = lines[index];
-        if (line.EndTime is { } end)
-            return end - line.StartTime;
-
-        return index + 1 < lines.Count
-            ? lines[index + 1].StartTime - line.StartTime
-            : 0;
-    }
-
-    /// <summary>
-    /// 计算当前播放位置（毫秒）。
-    /// SMTC 的 Position 是"上次更新时刻"的快照，QQ 音乐约每秒才推送一次，
-    /// 直接使用会导致歌词切换滞后；这里用 LastUpdatedTime 外推到当前时刻。
-    /// </summary>
-    private int GetPositionMs(
-        GlobalSystemMediaTransportControlsSessionTimelineProperties timeline,
-        GlobalSystemMediaTransportControlsSession session)
-    {
-        var position = timeline.Position;
-
-        // 仅在播放中做外推；暂停/停止时直接用上报的位置
-        if (session.GetPlaybackInfo().PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
-        {
-            var elapsed = DateTimeOffset.Now - timeline.LastUpdatedTime;
-            if (elapsed > TimeSpan.Zero && elapsed < TimeSpan.FromSeconds(2))
-            {
-                position += elapsed;
-            }
-        }
-
-        // 全局歌词偏移：正数 = 歌词提前显示
-        position += TimeSpan.FromMilliseconds(_settings.LyricOffsetMs);
-
-        if (position < TimeSpan.Zero)
-            position = TimeSpan.Zero;
-
-        return (int)position.TotalMilliseconds;
-    }
-
-    private void SetStatus(string text)
-    {
-        Dispatcher.Invoke(() => UpdateLyricDisplay(text));
-    }
-
-    /// <summary>显示歌词/状态文本：短文本贴左（紧挨组件卡片），超长文本跑马灯滚动</summary>
-    private void UpdateLyricDisplay(string text)
-    {
-        // 状态文本只走亮色层（无进度裁剪），暗色层清空避免残留上一行歌词的"鬼影"
-        LyricTextDim.Text = string.Empty;
-        LyricTextBright.Text = text;
-        LyricTextBright.Foreground = _lyricBrush;
-        LyricTextBright.Clip = null;
-        _lastClipWidth = -1;
-        LyricTranslation.Text = string.Empty;
-        LyricTranslation.Visibility = Visibility.Collapsed;
-        ReapplyLyricDisplay();
-    }
-
-    private void ReapplyLyricDisplay()
-    {
-        if (LyricHost.ActualWidth <= 0)
-            return;
-
-        LyricStack.UpdateLayout();
-        var hostWidth = LyricHost.ActualWidth;
-        var hostHeight = LyricHost.ActualHeight;
-        var textWidth = LyricStack.ActualWidth;
-        var availableWidth = Math.Max(0, hostWidth - _textBaseLeft);
-
-        // 诊断：尺寸或文本变化才打印，避免刷屏；帮助确认跑马灯分支是否进入
-        var diagSig = $"{hostWidth:F0}|{textWidth:F0}|{availableWidth:F0}|{LyricTextBright.Text}";
-        if (diagSig != _reapplyDiagSig)
-        {
-            _reapplyDiagSig = diagSig;
-            AppLog.Debug($"歌词布局: host={hostWidth:F0} text={textWidth:F0} avail={availableWidth:F0} 文本='{LyricTextBright.Text}'");
-        }
-
-        // 垂直居中
-        Canvas.SetTop(LyricStack, Math.Max(0, (hostHeight - LyricStack.ActualHeight) / 2));
-
-        // 短文本：紧贴卡片左缘（挨着组件）静态显示
-        if (textWidth <= availableWidth - 8)
-        {
-            LyricStack.BeginAnimation(TranslateTransform.XProperty, null);
-            Canvas.SetLeft(LyricStack, _textBaseLeft);
-            LyricTranslate.X = 0;
-            _marqueeSignature = string.Empty;
-            return;
-        }
-
-        // 超长文本：跑马灯（从组件右侧开始，向左滚出再返回）
-        Canvas.SetLeft(LyricStack, _textBaseLeft);
-        var distance = textWidth - availableWidth + MarqueeEndPadding;
-        if (distance <= 0)
-        {
-            LyricStack.BeginAnimation(TranslateTransform.XProperty, null);
-            LyricTranslate.X = 0;
-            _marqueeSignature = string.Empty;
-            return;
-        }
-
-        var duration = TimeSpan.FromSeconds(Math.Max(4, distance / Math.Max(_marqueeSpeed, 1)));
-        // 同一行、同样距离与时长的跑马灯已在滚动 → 不重启。
-        // PositionCard / PlaybackInfoChanged 等高频调用会反复走到这里，每次都从 0 重启会让文字永远停在开头。
-        // 距离按 8px 粒度量化：任务栏轮询带来的 1px 级宽度抖动不会触发重启，只有真正换行/大变宽才重启。
-        var quantizedDistance = Math.Round(distance / 8) * 8;
-        var signature = $"{LyricTextBright.Text}|{LyricTranslation.Text}|{LyricTranslation.Visibility}|{quantizedDistance:F0}|{duration.TotalSeconds:F0}";
-        if (signature == _marqueeSignature)
-            return;
-
-        _marqueeSignature = signature;
-        AppLog.Debug($"跑马灯启动: 距离={distance:F0} 时长={duration.TotalSeconds:F0}s 文本='{LyricTextBright.Text}'");
-        var animation = new DoubleAnimation(0, -distance, duration)
-        {
-            AutoReverse = true,
-            RepeatBehavior = RepeatBehavior.Forever,
-        };
-        Timeline.SetDesiredFrameRate(animation, 30); // 降低分层窗口重绘频率，减轻 DWM 合成压力
-        LyricTranslate.X = 0;
-        LyricStack.BeginAnimation(TranslateTransform.XProperty, animation);
+        ShowLyricLine(lines[index], positionMs);
     }
 
     protected override void OnClosed(EventArgs e)
@@ -1342,5 +760,21 @@ public partial class MainWindow
         _tray.Dispose();
         _taskbar.Dispose();
         base.OnClosed(e);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Point
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
     }
 }

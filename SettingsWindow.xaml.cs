@@ -8,9 +8,6 @@ namespace FluentLyrics;
 /// <summary>设置窗口：编辑并保存 AppSettings</summary>
 public partial class SettingsWindow : Window
 {
-    /// <summary>保存成功后触发（主窗口据此重新应用设置）</summary>
-    public event Action? Saved;
-
     // 保存设置时保留与界面无关的字段（如手动位置偏移），避免被默认值覆盖
     private readonly AppSettings _baseSettings;
 
@@ -20,9 +17,10 @@ public partial class SettingsWindow : Window
         _baseSettings = settings;
 
         FontSizeSlider.Value = settings.FontSize;
-        SpeedSlider.Value = settings.MarqueeSpeed;
         OffsetSlider.Value = settings.LyricOffsetMs;
         ClickThroughCheck.IsChecked = settings.ClickThrough;
+        MediaControlsCheck.IsChecked = settings.ShowMediaControls;
+        HideOnPauseCheck.IsChecked = settings.HideOnPause;
         AutoStartCheck.IsChecked = settings.AutoStart;
         FluentFlyoutCheck.IsChecked = settings.TaskbarLocatorWhitelist
             .Any(k => string.Equals(k, "FluentFlyout", StringComparison.OrdinalIgnoreCase));
@@ -33,23 +31,22 @@ public partial class SettingsWindow : Window
         WidthSlider.IsEnabled = !settings.AutoCardWidth;
 
         foreach (ComboBoxItem item in DirectionCombo.Items)
-        {
             if (item.Tag?.ToString() == settings.PlacementDirection)
             {
                 DirectionCombo.SelectedItem = item;
                 break;
             }
-        }
 
         foreach (ComboBoxItem item in ColorCombo.Items)
-        {
             if (item.Tag?.ToString() == settings.LyricColor)
             {
                 ColorCombo.SelectedItem = item;
                 break;
             }
-        }
     }
+
+    /// <summary>保存成功后触发（主窗口据此重新应用设置）</summary>
+    public event Action? Saved;
 
     private void AutoWidth_Changed(object sender, RoutedEventArgs e)
     {
@@ -76,16 +73,17 @@ public partial class SettingsWindow : Window
         {
             FontSize = FontSizeSlider.Value,
             LyricColor = (ColorCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "#FFFFFFFF",
-            MarqueeSpeed = SpeedSlider.Value,
             LyricOffsetMs = (int)OffsetSlider.Value,
             ClickThrough = ClickThroughCheck.IsChecked == true,
+            ShowMediaControls = MediaControlsCheck.IsChecked == true,
+            HideOnPause = HideOnPauseCheck.IsChecked == true,
             AutoStart = AutoStartCheck.IsChecked == true,
             TaskbarLocatorWhitelist = whitelist,
             PlacementDirection = (DirectionCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Auto",
             ManualOffsetX = _baseSettings.ManualOffsetX,
             ManualOffsetY = _baseSettings.ManualOffsetY,
             AutoCardWidth = AutoWidthCheck.IsChecked == true,
-            CardWidth = WidthSlider.Value,
+            CardWidth = WidthSlider.Value
         };
 
         AppSettingsService.Save(settings);

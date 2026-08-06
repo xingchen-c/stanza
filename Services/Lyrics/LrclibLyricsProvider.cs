@@ -22,7 +22,7 @@ public sealed class LrclibLyricsProvider : ILyricsProvider
             {
                 Title = title,
                 Artist = artist,
-                DurationMs = durationMs,
+                DurationMs = durationMs
             };
 
             var searchResult = await SearcherHelper.LRCLIBSearcher.SearchForResult(metadata);

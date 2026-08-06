@@ -15,8 +15,11 @@ public interface ITaskbarWidgetLocator
     PixelRect? Detect(IntPtr trayHwnd, PixelRect trayRect);
 
     /// <summary>
-    /// 推荐卡片区域（屏幕物理像素）；锚点定位器无需实现（默认返回 null）。
-    /// 独立定位器不依赖任何外部组件，直接给出卡片应占用的区域。
+    ///     推荐卡片区域（屏幕物理像素）；锚点定位器无需实现（默认返回 null）。
+    ///     独立定位器不依赖任何外部组件，直接给出卡片应占用的区域。
     /// </summary>
-    PixelRect? DetectCardRegion(IntPtr trayHwnd, PixelRect trayRect) => null;
+    PixelRect? DetectCardRegion(IntPtr trayHwnd, PixelRect trayRect)
+    {
+        return null;
+    }
 }

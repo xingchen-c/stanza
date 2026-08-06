@@ -2,56 +2,273 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="FluentLyrics 设置"
-        Width="380" Height="640"
+        Width="420" Height="700"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
-        FontFamily="Segoe UI, Microsoft YaHei UI">
-    <StackPanel Margin="20">
-        <TextBlock Text="歌词字号" Margin="0,0,0,4" />
-        <Slider x:Name="FontSizeSlider" Minimum="10" Maximum="28"
-                TickFrequency="1" IsSnapToTickEnabled="True" Value="15" />
+        FontFamily="Segoe UI Variable, Segoe UI, Microsoft YaHei UI">
+    <Window.Resources>
+        <!-- Fluent 强调色 -->
+        <SolidColorBrush x:Key="AccentBrush" Color="#0078D4" />
+        <SolidColorBrush x:Key="AccentHoverBrush" Color="#106EBE" />
+        <SolidColorBrush x:Key="CardBrush" Color="#F5F5F5" />
 
-        <TextBlock Text="歌词颜色" Margin="0,12,0,4" />
-        <ComboBox x:Name="ColorCombo">
-            <ComboBoxItem Content="白色" Tag="#FFFFFFFF" IsSelected="True" />
-            <ComboBoxItem Content="亮黄" Tag="#FFFFE08A" />
-            <ComboBoxItem Content="青色" Tag="#FF8AE8FF" />
-            <ComboBoxItem Content="浅绿" Tag="#FFA8FFB0" />
-            <ComboBoxItem Content="粉红" Tag="#FFFFA8D8" />
-        </ComboBox>
+        <!-- 分组卡片 -->
+        <Style x:Key="Card" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource CardBrush}" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="16,14" />
+            <Setter Property="Margin" Value="0,0,0,12" />
+        </Style>
 
-        <TextBlock Text="滚动速度（数字越大越快）" Margin="0,12,0,4" />
-        <Slider x:Name="SpeedSlider" Minimum="20" Maximum="150"
-                TickFrequency="1" IsSnapToTickEnabled="True" Value="55" />
+        <!-- 分组标题 -->
+        <Style x:Key="GroupHeader" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="#FF5A5A5A" />
+            <Setter Property="Margin" Value="0,0,0,10" />
+        </Style>
 
-        <TextBlock Text="歌词偏移（毫秒，正数 = 歌词提前显示）" Margin="0,12,0,4" />
-        <Slider x:Name="OffsetSlider" Minimum="-2000" Maximum="2000"
-                TickFrequency="50" IsSnapToTickEnabled="True" Value="0" />
+        <!-- 字段标签 -->
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="#FF323232" />
+            <Setter Property="Margin" Value="0,0,0,2" />
+        </Style>
 
-        <CheckBox x:Name="ClickThroughCheck" Content="鼠标点击穿透" Margin="0,14,0,0" />
-        <CheckBox x:Name="AutoStartCheck" Content="开机自启" Margin="0,8,0,0" />
+        <!-- 主按钮（accent） -->
+        <Style x:Key="AccentButton" TargetType="Button">
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="20,8" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="4">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="{StaticResource AccentHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="bd" Property="Opacity" Value="0.8" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
 
-        <TextBlock Text="任务栏定位（白名单）" Margin="0,14,0,4" />
-        <CheckBox x:Name="FluentFlyoutCheck" Content="贴 FluentFlyout 组件" Margin="0,0,0,6" />
-        <CheckBox x:Name="IndependentCheck" Content="独立定位（不依赖外部组件）" Margin="0,0,0,8" />
+        <!-- 次要按钮 -->
+        <Style x:Key="GhostButton" TargetType="Button">
+            <Setter Property="Foreground" Value="#FF323232" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="BorderBrush" Value="#33000000" />
+            <Setter Property="Padding" Value="20,8" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="#14000000" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="bd" Property="Opacity" Value="0.7" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
 
-        <TextBlock Text="放置方向（相对锚点组件）" Margin="0,4,0,4" />
-        <ComboBox x:Name="DirectionCombo">
-            <ComboBoxItem Content="自动（左半区贴右、右半区贴左）" Tag="Auto" IsSelected="True" />
-            <ComboBoxItem Content="始终贴组件右侧" Tag="Right" />
-            <ComboBoxItem Content="始终贴组件左侧" Tag="Left" />
-        </ComboBox>
+        <!-- Fluent 勾选框：圆角小方块 + 白色勾号 -->
+        <Style x:Key="FluentCheckBox" TargetType="CheckBox">
+            <Setter Property="Foreground" Value="#FF1F1F1F" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Margin" Value="0,0,0,10" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <StackPanel Orientation="Horizontal">
+                            <Border x:Name="box" Width="18" Height="18" CornerRadius="4"
+                                    Background="#E6FFFFFF" BorderBrush="#66000000" BorderThickness="1"
+                                    VerticalAlignment="Center">
+                                <Path x:Name="check"
+                                      Data="M 3,9 L 7,13 L 15,4"
+                                      Stroke="White" StrokeThickness="2"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                      Visibility="Collapsed" />
+                            </Border>
+                            <ContentPresenter Margin="8,0,0,0" VerticalAlignment="Center" />
+                        </StackPanel>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="box" Property="Background" Value="{StaticResource AccentBrush}" />
+                                <Setter TargetName="box" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                <Setter TargetName="check" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="box" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
 
-        <TextBlock Text="歌词栏宽度" Margin="0,14,0,4" />
-        <CheckBox x:Name="AutoWidthCheck" Content="自动适配（跟随定位区域）"
-                  Checked="AutoWidth_Changed" Unchecked="AutoWidth_Changed" />
-        <Slider x:Name="WidthSlider" Minimum="120" Maximum="1200"
-                TickFrequency="10" IsSnapToTickEnabled="True" Value="600"
-                IsEnabled="False" Margin="0,4,0,0" />
+        <!-- Fluent 滑块：accent 已选轨道 + 圆点 -->
+        <Style x:Key="FluentSlider" TargetType="Slider">
+            <Setter Property="Height" Value="24" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Slider">
+                        <Grid VerticalAlignment="Center">
+                            <Track x:Name="PART_Track">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="Slider.DecreaseLarge" Focusable="False">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="RepeatButton">
+                                                <Border Height="3" CornerRadius="1.5" Background="{StaticResource AccentBrush}" />
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.DecreaseRepeatButton>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="Slider.IncreaseLarge" Focusable="False">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="RepeatButton">
+                                                <Border Height="3" CornerRadius="1.5" Background="#E0E0E0" />
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.IncreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb Width="14" Height="14">
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <Border CornerRadius="7" Background="White"
+                                                        BorderBrush="#66000000" BorderThickness="1" />
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
 
-        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,22,0,0">
-            <Button Content="保存" Width="80" Click="Save_Click" />
-            <Button Content="取消" Width="80" Margin="10,0,0,0" Click="Cancel_Click" />
+        <Style x:Key="FluentComboBox" TargetType="ComboBox">
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="FontSize" Value="13" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
+            <StackPanel>
+                <!-- 歌词 -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="歌词" Style="{StaticResource GroupHeader}" />
+
+                        <TextBlock Text="字号" Style="{StaticResource FieldLabel}" />
+                        <Slider x:Name="FontSizeSlider" Minimum="10" Maximum="28"
+                                TickFrequency="1" IsSnapToTickEnabled="True" Value="15"
+                                Style="{StaticResource FluentSlider}" Margin="0,0,0,12" />
+
+                        <TextBlock Text="歌词颜色" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="ColorCombo" Style="{StaticResource FluentComboBox}">
+                            <ComboBoxItem Content="白色" Tag="#FFFFFFFF" IsSelected="True" />
+                            <ComboBoxItem Content="亮黄" Tag="#FFFFE08A" />
+                            <ComboBoxItem Content="青色" Tag="#FF8AE8FF" />
+                            <ComboBoxItem Content="浅绿" Tag="#FFA8FFB0" />
+                            <ComboBoxItem Content="粉红" Tag="#FFFFA8D8" />
+                        </ComboBox>
+
+                        <TextBlock Text="歌词偏移（毫秒，正数 = 歌词提前显示）" Style="{StaticResource FieldLabel}" />
+                        <Slider x:Name="OffsetSlider" Minimum="-2000" Maximum="2000"
+                                TickFrequency="50" IsSnapToTickEnabled="True" Value="0"
+                                Style="{StaticResource FluentSlider}" />
+                    </StackPanel>
+                </Border>
+
+                <!-- 任务栏 -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="任务栏" Style="{StaticResource GroupHeader}" />
+
+                        <TextBlock Text="定位方式（至少勾选一项）" Style="{StaticResource FieldLabel}" />
+                        <CheckBox x:Name="FluentFlyoutCheck" Content="贴 FluentFlyout 组件"
+                                  Style="{StaticResource FluentCheckBox}" />
+                        <CheckBox x:Name="IndependentCheck" Content="独立定位（不依赖外部组件）"
+                                  Style="{StaticResource FluentCheckBox}" />
+
+                        <TextBlock Text="放置方向（相对锚点组件）" Style="{StaticResource FieldLabel}" />
+                        <ComboBox x:Name="DirectionCombo" Style="{StaticResource FluentComboBox}">
+                            <ComboBoxItem Content="自动（左半区贴右、右半区贴左）" Tag="Auto" IsSelected="True" />
+                            <ComboBoxItem Content="始终贴组件右侧" Tag="Right" />
+                            <ComboBoxItem Content="始终贴组件左侧" Tag="Left" />
+                        </ComboBox>
+
+                        <TextBlock Text="歌词栏宽度" Style="{StaticResource FieldLabel}" Margin="0,12,0,2" />
+                        <CheckBox x:Name="AutoWidthCheck" Content="自动适配（跟随定位区域）"
+                                  Style="{StaticResource FluentCheckBox}"
+                                  Checked="AutoWidth_Changed" Unchecked="AutoWidth_Changed" />
+                        <Slider x:Name="WidthSlider" Minimum="120" Maximum="1200"
+                                TickFrequency="10" IsSnapToTickEnabled="True" Value="600"
+                                IsEnabled="False" Style="{StaticResource FluentSlider}" />
+                    </StackPanel>
+                </Border>
+
+                <!-- 媒体控制 -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="媒体控制" Style="{StaticResource GroupHeader}" />
+                        <CheckBox x:Name="MediaControlsCheck" Content="显示封面与播放控制"
+                                  Style="{StaticResource FluentCheckBox}" />
+                        <CheckBox x:Name="HideOnPauseCheck" Content="暂停时隐藏歌词卡片"
+                                  Style="{StaticResource FluentCheckBox}" />
+                    </StackPanel>
+                </Border>
+
+                <!-- 通用 -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="通用" Style="{StaticResource GroupHeader}" />
+                        <CheckBox x:Name="ClickThroughCheck" Content="鼠标点击穿透"
+                                  Style="{StaticResource FluentCheckBox}" />
+                        <CheckBox x:Name="AutoStartCheck" Content="开机自启"
+                                  Style="{StaticResource FluentCheckBox}" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="保存" Style="{StaticResource AccentButton}" Click="Save_Click" />
+            <Button Content="取消" Style="{StaticResource GhostButton}" Margin="10,0,0,0" Click="Cancel_Click" />
         </StackPanel>
-    </StackPanel>
+    </Grid>
 </Window>

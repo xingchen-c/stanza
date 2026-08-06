@@ -44,14 +44,14 @@ public static class AppSettingsService
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(
-                @"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
+                @"Software\Microsoft\Windows\CurrentVersion\Run", true);
             if (key is null)
                 return;
 
             if (enabled)
                 key.SetValue("FluentLyrics", $"\"{Environment.ProcessPath}\"");
             else
-                key.DeleteValue("FluentLyrics", throwOnMissingValue: false);
+                key.DeleteValue("FluentLyrics", false);
         }
         catch
         {

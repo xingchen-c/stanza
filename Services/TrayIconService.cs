@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Windows.Forms;
+using Application = System.Windows.Application;
 
 namespace FluentLyrics.Services;
 
@@ -7,6 +8,38 @@ namespace FluentLyrics.Services;
 public sealed class TrayIconService : IDisposable
 {
     private readonly NotifyIcon _notifyIcon;
+
+    private readonly ToolStripMenuItem? _adjustMenuItem;
+
+    public TrayIconService()
+    {
+        _notifyIcon = new NotifyIcon
+        {
+            Icon = LoadAppIcon(),
+            Text = "FluentLyrics 任务栏歌词",
+            Visible = true
+        };
+
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("显示/隐藏歌词", null, (_, _) => ShowHideRequested?.Invoke());
+        menu.Items.Add("设置", null, (_, _) => SettingsRequested?.Invoke());
+        menu.Items.Add("打开日志目录", null, (_, _) => OpenLogDirectoryRequested?.Invoke());
+        menu.Items.Add("清除歌词缓存", null, (_, _) => ClearCacheRequested?.Invoke());
+        _adjustMenuItem = new ToolStripMenuItem("调整歌词位置…", null, (_, _) => AdjustPositionRequested?.Invoke());
+        menu.Items.Add(_adjustMenuItem);
+        menu.Items.Add("重置歌词位置", null, (_, _) => ResetPositionRequested?.Invoke());
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("退出", null, (_, _) => ExitRequested?.Invoke());
+        _notifyIcon.ContextMenuStrip = menu;
+
+        _notifyIcon.DoubleClick += (_, _) => ShowHideRequested?.Invoke();
+    }
+
+    public void Dispose()
+    {
+        _notifyIcon.Visible = false;
+        _notifyIcon.Dispose();
+    }
 
     /// <summary>请求切换卡片显隐</summary>
     public event Action? ShowHideRequested;
@@ -29,38 +62,12 @@ public sealed class TrayIconService : IDisposable
     /// <summary>请求重置手动位置偏移</summary>
     public event Action? ResetPositionRequested;
 
-    private ToolStripMenuItem? _adjustMenuItem;
-
-    public TrayIconService()
-    {
-        _notifyIcon = new NotifyIcon
-        {
-            Icon = LoadAppIcon(),
-            Text = "FluentLyrics 任务栏歌词",
-            Visible = true,
-        };
-
-        var menu = new ContextMenuStrip();
-        menu.Items.Add("显示/隐藏歌词", null, (_, _) => ShowHideRequested?.Invoke());
-        menu.Items.Add("设置", null, (_, _) => SettingsRequested?.Invoke());
-        menu.Items.Add("打开日志目录", null, (_, _) => OpenLogDirectoryRequested?.Invoke());
-        menu.Items.Add("清除歌词缓存", null, (_, _) => ClearCacheRequested?.Invoke());
-        _adjustMenuItem = new ToolStripMenuItem("调整歌词位置…", null, (_, _) => AdjustPositionRequested?.Invoke());
-        menu.Items.Add(_adjustMenuItem);
-        menu.Items.Add("重置歌词位置", null, (_, _) => ResetPositionRequested?.Invoke());
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("退出", null, (_, _) => ExitRequested?.Invoke());
-        _notifyIcon.ContextMenuStrip = menu;
-
-        _notifyIcon.DoubleClick += (_, _) => ShowHideRequested?.Invoke();
-    }
-
     /// <summary>加载嵌入资源里的自定义图标；失败时回退系统图标</summary>
     private static Icon LoadAppIcon()
     {
         try
         {
-            var stream = System.Windows.Application.GetResourceStream(
+            var stream = Application.GetResourceStream(
                 new Uri("pack://application:,,,/Assets/app.ico"))?.Stream;
             if (stream is not null)
                 return new Icon(stream);
@@ -78,11 +85,5 @@ public sealed class TrayIconService : IDisposable
     {
         if (_adjustMenuItem is not null)
             _adjustMenuItem.Text = adjusting ? "完成调整（保存）" : "调整歌词位置…";
-    }
-
-    public void Dispose()
-    {
-        _notifyIcon.Visible = false;
-        _notifyIcon.Dispose();
     }
 }

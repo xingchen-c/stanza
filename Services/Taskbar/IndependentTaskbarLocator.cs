@@ -4,42 +4,25 @@ using FluentLyrics.Models;
 namespace FluentLyrics.Services.Taskbar;
 
 /// <summary>
-/// 独立任务栏定位器（不依赖 FluentFlyout 等外部组件）：
-/// 不提供组件锚点（Detect 恒为 null），而是直接给出卡片推荐区域 DetectCardRegion：
-/// - 开始按钮居中：卡片默认左对齐（贴任务栏左缘，右缘不越过开始按钮）；
-/// - 开始按钮居左 / 副屏（无开始按钮）：卡片默认水平居中，避开左侧图标区与右侧托盘。
-/// 宽度上限 600px、下限 120px；与目标区域统一留 8px 间隙。
+///     独立任务栏定位器（不依赖 FluentFlyout 等外部组件）：
+///     不提供组件锚点（Detect 恒为 null），而是直接给出卡片推荐区域 DetectCardRegion：
+///     - 开始按钮居中：卡片默认左对齐（贴任务栏左缘，右缘不越过开始按钮）；
+///     - 开始按钮居左 / 副屏（无开始按钮）：卡片默认水平居中，避开左侧图标区与右侧托盘。
+///     宽度上限 600px、下限 120px；与目标区域统一留 8px 间隙。
 /// </summary>
 public sealed class IndependentTaskbarLocator : ITaskbarWidgetLocator
 {
+    private const int CardRightGap = 8;
+    private const int MaxCardWidth = 600;
+    private const int MinCardWidth = 120;
     public string Key => "Independent";
 
     public string Name => "独立定位";
 
-    private const int CardRightGap = 8;
-    private const int MaxCardWidth = 600;
-    private const int MinCardWidth = 120;
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr childAfter, string? className, string? windowName);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT
+    public PixelRect? Detect(IntPtr trayHwnd, PixelRect trayRect)
     {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-
-        public int Width => Right - Left;
-        public int Height => Bottom - Top;
+        return null;
     }
-
-    public PixelRect? Detect(IntPtr trayHwnd, PixelRect trayRect) => null;
 
     public PixelRect? DetectCardRegion(IntPtr trayHwnd, PixelRect trayRect)
     {
@@ -76,11 +59,30 @@ public sealed class IndependentTaskbarLocator : ITaskbarWidgetLocator
         return new PixelRect(cardLeft, trayRect.Top, cardLeft + width, trayRect.Bottom);
     }
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr childAfter, string? className, string? windowName);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
     private static PixelRect? GetChildRect(IntPtr parent, string className)
     {
         var h = FindWindowEx(parent, IntPtr.Zero, className, null);
         if (h == IntPtr.Zero || !GetWindowRect(h, out var rect) || rect.Width <= 0 || rect.Height <= 0)
             return null;
         return new PixelRect(rect.Left, rect.Top, rect.Right, rect.Bottom);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+
+        public int Width => Right - Left;
+        public int Height => Bottom - Top;
     }
 }

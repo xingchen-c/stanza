@@ -1,7 +1,6 @@
-using System.Reflection;
 using System.IO;
+using System.Reflection;
 using System.Text;
-using System.Threading;
 using System.Windows;
 using System.Windows.Threading;
 using FluentLyrics.Services;
@@ -9,7 +8,7 @@ using FluentLyrics.Services;
 namespace FluentLyrics;
 
 /// <summary>
-/// Interaction logic for App.xaml
+///     Interaction logic for App.xaml
 /// </summary>
 public partial class App : Application
 {
@@ -23,7 +22,7 @@ public partial class App : Application
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
 
         // 单实例保护：防止两个歌词窗口叠在任务栏上
-        _singleInstanceMutex = new Mutex(true, @"Local\FluentLyrics_SingleInstance", out bool createdNew);
+        _singleInstanceMutex = new Mutex(true, @"Local\FluentLyrics_SingleInstance", out var createdNew);
         if (!createdNew)
         {
             AppLog.Info("检测到已有实例，本次启动退出");

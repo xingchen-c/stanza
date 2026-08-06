@@ -3,22 +3,18 @@ using FluentLyrics.Models;
 namespace FluentLyrics.Services.Lyrics;
 
 /// <summary>
-/// 歌词服务门面：按顺序尝试各歌词源，缓存当前歌曲的歌词行，并按播放位置取当前行。
+///     歌词服务门面：按顺序尝试各歌词源，缓存当前歌曲的歌词行，并按播放位置取当前行。
 /// </summary>
 public sealed class LyricsService
 {
+    // 最近歌曲的歌词缓存：切回听过的歌秒出，不用重新走网络搜索
+    private readonly Dictionary<string, (LyricsLoadResult Status, List<LyricLine> Lines)> _cache = new();
     private readonly ILyricsProvider[] _providers;
     private List<LyricLine> _lines = new();
 
-    // 最近歌曲的歌词缓存：切回听过的歌秒出，不用重新走网络搜索
-    private readonly Dictionary<string, (LyricsLoadResult Status, List<LyricLine> Lines)> _cache = new();
-
-    /// <summary>当前歌曲的歌词行（按开始时间升序）</summary>
-    public IReadOnlyList<LyricLine> Lines => _lines;
-
     /// <summary>默认歌词源：QQ 音乐优先，LRCLIB 兜底</summary>
     public LyricsService()
-        : this([new QqMusicLyricsProvider(), new LrclibLyricsProvider()])
+        : this(new QqMusicLyricsProvider(), new LrclibLyricsProvider())
     {
     }
 
@@ -27,6 +23,9 @@ public sealed class LyricsService
     {
         _providers = providers.Length > 0 ? providers : [new QqMusicLyricsProvider()];
     }
+
+    /// <summary>当前歌曲的歌词行（按开始时间升序）</summary>
+    public IReadOnlyList<LyricLine> Lines => _lines;
 
     /// <summary>搜索并加载歌词；返回加载结果</summary>
     public async Task<LyricsLoadResult> LoadAsync(string title, string artist, int? durationMs)
@@ -68,6 +67,7 @@ public sealed class LyricsService
                     AppLog.Warn($"歌词源 {provider.Name} 超过总预算 8s 未返回，本轮放弃");
                     break; // 总超时：该源（及后续源）本轮不再等待，直接返回 NotFound
                 }
+
                 result = await loadTask;
             }
             catch (Exception ex)
@@ -113,8 +113,8 @@ public sealed class LyricsService
     }
 
     /// <summary>
-    /// 按播放位置（毫秒）二分查找当前行索引。
-    /// 还没到第一行时返回 0（提前显示第一行）；没有歌词时返回 -1。
+    ///     按播放位置（毫秒）二分查找当前行索引。
+    ///     还没到第一行时返回 0（提前显示第一行）；没有歌词时返回 -1。
     /// </summary>
     public int GetLineIndexAt(int positionMs)
     {
@@ -127,7 +127,7 @@ public sealed class LyricsService
         int lo = 0, hi = lines.Count - 1, result = -1;
         while (lo <= hi)
         {
-            int mid = (lo + hi) / 2;
+            var mid = (lo + hi) / 2;
             if (lines[mid].StartTime <= positionMs)
             {
                 result = mid;

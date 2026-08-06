@@ -22,7 +22,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
             {
                 Title = title,
                 Artist = artist,
-                DurationMs = durationMs,
+                DurationMs = durationMs
             };
 
             var searchResult = await SearcherHelper.QQMusicSearcher.SearchForResult(metadata);
@@ -91,20 +91,17 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
     {
         var parsed = new List<LyricLine>();
         foreach (var rawType in new[] { LyricsRawTypes.Qrc, LyricsRawTypes.Lrc })
-        {
             try
             {
                 var data = ParseHelper.ParseLyrics(rawLyrics, rawType);
                 parsed = new List<LyricLine>();
                 if (data?.Lines is not null)
-                {
                     foreach (var line in data.Lines)
                     {
                         if (!TryGetTiming(line, out var startTime, out var text, out var endTime))
                             continue;
                         parsed.Add(new LyricLine(startTime, text, endTime, words: BuildWords(line)));
                     }
-                }
 
                 parsed.Sort((a, b) => a.StartTime.CompareTo(b.StartTime));
                 if (parsed.Count > 0)
@@ -114,7 +111,6 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
             {
                 // 该格式解析失败就试下一种
             }
-        }
 
         return parsed;
     }
@@ -125,9 +121,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
         if (line is not SyllableLineInfo syllable ||
             !syllable.IsSyllable ||
             syllable.Syllables is not { Count: > 0 } syllables)
-        {
             return null;
-        }
 
         var words = new List<LyricWord>(syllables.Count);
         foreach (var s in syllables)
@@ -204,18 +198,12 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
             {
                 var data = ParseHelper.ParseLyrics(transRaw, rawType);
                 if (data?.Lines is not null)
-                {
                     foreach (var line in data.Lines)
-                    {
                         if (TryGetTiming(line, out var start, out var text, out _) &&
                             !string.IsNullOrWhiteSpace(text) &&
                             !IsPlaceholderTranslation(text) &&
                             !map.ContainsKey(start))
-                        {
                             map[start] = text;
-                        }
-                    }
-                }
             }
             catch
             {

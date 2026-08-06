@@ -9,10 +9,10 @@ using Microsoft.Win32;
 namespace FluentLyrics.Services.Taskbar;
 
 /// <summary>
-/// 任务栏定位服务（支持多显示器）：
-/// 枚举所有任务栏（Shell_TrayWnd / Shell_SecondaryTrayWnd），
-/// 按白名单过滤定位器：探到锚点组件时按放置方向计算卡片区域，
-/// 否则用独立定位 / 兜底区域；组件暂隐时保留上次选中的任务栏与位置。
+///     任务栏定位服务（支持多显示器）：
+///     枚举所有任务栏（Shell_TrayWnd / Shell_SecondaryTrayWnd），
+///     按白名单过滤定位器：探到锚点组件时按放置方向计算卡片区域，
+///     否则用独立定位 / 兜底区域；组件暂隐时保留上次选中的任务栏与位置。
 /// </summary>
 public sealed class TaskbarService : IDisposable
 {
@@ -23,68 +23,28 @@ public sealed class TaskbarService : IDisposable
     private const int MaxCardWidth = 600;
     private const int MinCardWidth = 120;
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr childAfter, string? className, string? windowName);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern int GetClassName(IntPtr hWnd, StringBuilder className, int maxCount);
-
-    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-
-        public int Width => Right - Left;
-        public int Height => Bottom - Top;
-    }
-
     private readonly Dispatcher _dispatcher = Dispatcher.CurrentDispatcher;
-    private readonly DispatcherTimer _pollTimer;
     private readonly ITaskbarWidgetLocator[] _locators;
-    private string _layoutSignature = string.Empty;
+    private readonly DispatcherTimer _pollTimer;
+
+    // 卡片区域缓存（屏幕物理像素）：单次探测失败保留上次结果，避免卡片跳位
+    private PixelRect _cardRegion;
 
     // 白名单（定位器 Key）与放置方向，来自 AppSettings；优先级按列表顺序（FluentFlyout > Independent）
     private HashSet<string> _enabledKeys = new(StringComparer.OrdinalIgnoreCase)
     {
         "FluentFlyout",
-        IndependentLocatorKey,
+        IndependentLocatorKey
     };
+
+    private bool _hasCardRegion;
+    private string _layoutSignature = string.Empty;
     private string _placementDirection = "Auto";
 
     // 当前选中的任务栏（组件所在的那条；组件暂隐时保留上次）
     private IntPtr _taskbarHwnd;
     private RECT _taskbarRect;
-    private bool _isPrimaryTaskbar = true;
-
-    // 卡片区域缓存（屏幕物理像素）：单次探测失败保留上次结果，避免卡片跳位
-    private PixelRect _cardRegion;
-    private bool _hasCardRegion;
     private bool _wasAnchorBased; // 上次有效区域是否来自锚点组件（决定组件暂隐时是否粘性保留）
-
-    /// <summary>是否拿到了有效的任务栏矩形</summary>
-    public bool HasTaskbar => _taskbarRect.Width > 0 && _taskbarRect.Height > 0;
-
-    /// <summary>当前选中的是否主任务栏（副屏任务栏没有开始按钮，定位回退策略不同）</summary>
-    public bool IsPrimaryTaskbar => _isPrimaryTaskbar;
-
-    /// <summary>本次探测组件是否真的在显示（不读粘性缓存，暂停播放组件隐藏时为 false）</summary>
-    public bool IsWidgetPresent { get; private set; }
-
-    /// <summary>任务栏矩形、组件可见区域或开始按钮位置变化时触发（已在 UI 线程）</summary>
-    public event Action? TaskbarChanged;
 
     /// <summary>默认注册锚点定位器与独立定位器（白名单默认两者都启用）</summary>
     public TaskbarService()
@@ -109,6 +69,39 @@ public sealed class TaskbarService : IDisposable
 
         Refresh();
     }
+
+    /// <summary>是否拿到了有效的任务栏矩形</summary>
+    public bool HasTaskbar => _taskbarRect.Width > 0 && _taskbarRect.Height > 0;
+
+    /// <summary>当前选中的是否主任务栏（副屏任务栏没有开始按钮，定位回退策略不同）</summary>
+    public bool IsPrimaryTaskbar { get; private set; } = true;
+
+    /// <summary>本次探测组件是否真的在显示（不读粘性缓存，暂停播放组件隐藏时为 false）</summary>
+    public bool IsWidgetPresent { get; private set; }
+
+    public void Dispose()
+    {
+        _pollTimer.Stop();
+        SystemEvents.DisplaySettingsChanged -= OnSystemEvent;
+        SystemEvents.UserPreferenceChanged -= OnSystemEvent;
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr childAfter, string? className, string? windowName);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hWnd, StringBuilder className, int maxCount);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+    /// <summary>任务栏矩形、组件可见区域或开始按钮位置变化时触发（已在 UI 线程）</summary>
+    public event Action? TaskbarChanged;
 
     /// <summary>应用定位相关设置（白名单 + 放置方向）；变化时立即重新定位</summary>
     public void ApplySettings(AppSettings settings)
@@ -143,9 +136,9 @@ public sealed class TaskbarService : IDisposable
     public void Refresh()
     {
         // 多显示器：枚举所有任务栏，优先选"探到锚点组件"的那条；找不到时用第一条（主任务栏）兜底
-        IntPtr chosen = IntPtr.Zero;
+        var chosen = IntPtr.Zero;
         RECT chosenRect = default;
-        bool chosenPrimary = true;
+        var chosenPrimary = true;
         PixelRect? widget = null;
         PixelRect? start = null;
 
@@ -196,7 +189,7 @@ public sealed class TaskbarService : IDisposable
         {
             _taskbarHwnd = chosen;
             _taskbarRect = chosenRect;
-            _isPrimaryTaskbar = chosenPrimary;
+            IsPrimaryTaskbar = chosenPrimary;
 
             var card = widget is { } w
                 ? ComputeAnchorCardRegion(trayRect, w, start) ?? ComputeFallbackRegion(trayRect, start)
@@ -208,6 +201,7 @@ public sealed class TaskbarService : IDisposable
                 _cardRegion = c;
                 _hasCardRegion = true;
             }
+
             IsWidgetPresent = widget is not null;
         }
 
@@ -261,7 +255,7 @@ public sealed class TaskbarService : IDisposable
             "Right" => true,
             "Left" => false,
             // 自动：组件在任务栏左半区 → 贴右侧；右半区 → 贴左侧
-            _ => (widget.Left + widget.Right) / 2 <= (tray.Left + tray.Right) / 2,
+            _ => (widget.Left + widget.Right) / 2 <= (tray.Left + tray.Right) / 2
         };
 
         if (placeRight)
@@ -270,7 +264,7 @@ public sealed class TaskbarService : IDisposable
             // 右界：优先开始按钮左侧；找不到则主屏回退中线（开始按钮居中）、副屏留出托盘空间
             var rightBound = start is { } s
                 ? s.Left - CardGap
-                : _isPrimaryTaskbar
+                : IsPrimaryTaskbar
                     ? tray.Left + tray.Width / 2
                     : tray.Right - 170;
             var right = Math.Min(left + MaxCardWidth, rightBound);
@@ -314,7 +308,7 @@ public sealed class TaskbarService : IDisposable
         var left = tray.Left;
         var rightEdge = start is { } s
             ? s.Left - CardGap
-            : _isPrimaryTaskbar
+            : IsPrimaryTaskbar
                 ? tray.Left + tray.Width / 2
                 : tray.Right - 170;
 
@@ -378,8 +372,8 @@ public sealed class TaskbarService : IDisposable
     }
 
     /// <summary>
-    /// 通过 Win32 子窗口定位开始按钮（Shell_TrayWnd 下类名为 Start 的子窗口）。
-    /// 副屏任务栏（Shell_SecondaryTrayWnd）没有开始按钮，返回 null，由调用方回退。
+    ///     通过 Win32 子窗口定位开始按钮（Shell_TrayWnd 下类名为 Start 的子窗口）。
+    ///     副屏任务栏（Shell_SecondaryTrayWnd）没有开始按钮，返回 null，由调用方回退。
     /// </summary>
     private static PixelRect? DetectStartButtonRect(IntPtr trayHwnd)
     {
@@ -396,10 +390,17 @@ public sealed class TaskbarService : IDisposable
         return new PixelRect(rect.Left, rect.Top, rect.Right, rect.Bottom);
     }
 
-    public void Dispose()
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
     {
-        _pollTimer.Stop();
-        SystemEvents.DisplaySettingsChanged -= OnSystemEvent;
-        SystemEvents.UserPreferenceChanged -= OnSystemEvent;
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+
+        public int Width => Right - Left;
+        public int Height => Bottom - Top;
     }
 }
