@@ -44,7 +44,7 @@ public sealed class TaskbarService : IDisposable
 
     // 当前选中的任务栏（组件所在的那条；组件暂隐时保留上次）
     private IntPtr _taskbarHwnd;
-    private RECT _taskbarRect;
+    private Rect _taskbarRect;
     private bool _wasAnchorBased; // 上次有效区域是否来自锚点组件（决定组件暂隐时是否粘性保留）
 
     /// <summary>默认注册锚点定位器与独立定位器（白名单默认两者都启用）</summary>
@@ -90,11 +90,6 @@ public sealed class TaskbarService : IDisposable
             lock (_sync)
                 return _isPrimaryTaskbar;
         }
-        private set
-        {
-            lock (_sync)
-                _isPrimaryTaskbar = value;
-        }
     }
 
     private bool _isPrimaryTaskbar = true;
@@ -106,11 +101,6 @@ public sealed class TaskbarService : IDisposable
         {
             lock (_sync)
                 return _isWidgetPresent;
-        }
-        private set
-        {
-            lock (_sync)
-                _isWidgetPresent = value;
         }
     }
 
@@ -128,7 +118,7 @@ public sealed class TaskbarService : IDisposable
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+    private static extern bool GetWindowRect(IntPtr hWnd, out Rect rect);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetClassName(IntPtr hWnd, StringBuilder className, int maxCount);
@@ -144,7 +134,7 @@ public sealed class TaskbarService : IDisposable
     public void ApplySettings(AppSettings settings)
     {
         var enabled = new HashSet<string>(
-            settings.TaskbarLocatorWhitelist ?? [],
+            settings.TaskbarLocatorWhitelist,
             StringComparer.OrdinalIgnoreCase);
         var direction = string.IsNullOrWhiteSpace(settings.PlacementDirection)
             ? "Auto"
@@ -196,7 +186,7 @@ public sealed class TaskbarService : IDisposable
 
         // 多显示器：枚举所有任务栏，优先选"探到锚点组件"的那条；找不到时用第一条（主任务栏）兜底
         var chosen = IntPtr.Zero;
-        RECT chosenRect = default;
+        Rect chosenRect = default;
         var chosenPrimary = true;
         PixelRect? widget = null;
         PixelRect? start = null;
@@ -413,7 +403,7 @@ public sealed class TaskbarService : IDisposable
     }
 
     /// <summary>把当前选中的任务栏矩形换算成 DIP 坐标（相对虚拟屏幕左上角）</summary>
-    public Rect GetTaskbarRectDips(Window window)
+    public System.Windows.Rect GetTaskbarRectDips(Window window)
     {
         PixelRect rect;
         lock (_sync)
@@ -433,7 +423,7 @@ public sealed class TaskbarService : IDisposable
     }
 
     /// <summary>推荐卡片区域的 DIP 矩形，来自最近一次成功计算的缓存；没找到返回 null</summary>
-    public Rect? GetCardRegionDips(Window window)
+    public System.Windows.Rect? GetCardRegionDips(Window window)
     {
         PixelRect rect;
         lock (_sync)
@@ -446,12 +436,12 @@ public sealed class TaskbarService : IDisposable
         return ToDips(window, rect);
     }
 
-    private static Rect ToDips(Window window, PixelRect rect)
+    private static System.Windows.Rect ToDips(Window window, PixelRect rect)
     {
         var transform = GetTransform(window);
         var topLeft = transform.Transform(new Point(rect.Left, rect.Top));
         var bottomRight = transform.Transform(new Point(rect.Right, rect.Bottom));
-        return new Rect(topLeft, bottomRight);
+        return new System.Windows.Rect(topLeft, bottomRight);
     }
 
     private static Matrix GetTransform(Window window)
@@ -482,7 +472,7 @@ public sealed class TaskbarService : IDisposable
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct RECT
+    private struct Rect
     {
         public int Left;
         public int Top;

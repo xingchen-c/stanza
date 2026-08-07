@@ -72,7 +72,7 @@ public sealed class FluentFlyoutWidgetLocator : ITaskbarWidgetLocator
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+    private static extern bool GetWindowRect(IntPtr hWnd, out Rect rect);
 
     [DllImport("gdi32.dll")]
     private static extern IntPtr CreateRectRgn(int left, int top, int right, int bottom);
@@ -84,7 +84,7 @@ public sealed class FluentFlyoutWidgetLocator : ITaskbarWidgetLocator
     private static extern int GetWindowRgn(IntPtr hWnd, IntPtr hRgn);
 
     [DllImport("gdi32.dll")]
-    private static extern int GetRgnBox(IntPtr hRgn, out RECT rect);
+    private static extern int GetRgnBox(IntPtr hRgn, out Rect rect);
 
     /// <summary>在任务栏子窗口中找 FluentFlyout 的宿主窗口（类名 HwndWrapper[FluentFlyout...）</summary>
     private static List<IntPtr> FindFluentFlyoutTaskbarWindows(IntPtr trayHwnd)
@@ -130,7 +130,7 @@ public sealed class FluentFlyoutWidgetLocator : ITaskbarWidgetLocator
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct RECT
+    private struct Rect
     {
         public int Left;
         public int Top;

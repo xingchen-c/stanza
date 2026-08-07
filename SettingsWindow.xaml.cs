@@ -6,7 +6,7 @@ using FluentLyrics.Services;
 namespace FluentLyrics;
 
 /// <summary>设置窗口：编辑并保存 AppSettings</summary>
-public partial class SettingsWindow : Window
+public partial class SettingsWindow
 {
     // 保存设置时保留与界面无关的字段（如手动位置偏移），避免被默认值覆盖
     private readonly AppSettings _baseSettings;

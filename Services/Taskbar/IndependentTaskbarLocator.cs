@@ -64,7 +64,7 @@ public sealed class IndependentTaskbarLocator : ITaskbarWidgetLocator
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+    private static extern bool GetWindowRect(IntPtr hWnd, out Rect rect);
 
     private static PixelRect? GetChildRect(IntPtr parent, string className)
     {
@@ -75,7 +75,7 @@ public sealed class IndependentTaskbarLocator : ITaskbarWidgetLocator
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct RECT
+    private struct Rect
     {
         public int Left;
         public int Top;

@@ -29,7 +29,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
             if (searchResult is not QQMusicSearchResult qq)
                 return new LyricsResult(LyricsLoadResult.NotFound, []);
 
-            AppLog.Debug($"QQ 搜索命中: '{qq.Title}' / {string.Join(", ", qq.Artists ?? [])} / 专辑='{qq.Album}' / 时长={qq.DurationMs?.ToString() ?? "?"}ms / MatchType={qq.MatchType}");
+            AppLog.Debug($"QQ 搜索命中: '{qq.Title}' / {string.Join(", ", qq.Artists)} / 专辑='{qq.Album}' / 时长={qq.DurationMs?.ToString() ?? "?"}ms / MatchType={qq.MatchType}");
 
             // 2. 用歌曲 Id 获取解密后的歌词文本
             var response = await ProviderHelper.QQMusicApi.GetLyricsAsync(qq.Id);
