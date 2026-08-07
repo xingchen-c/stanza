@@ -292,9 +292,8 @@ public partial class MainWindow
         var coverWidth = CoverBorder.Visibility == Visibility.Visible
             ? CoverBorder.ActualWidth + 6 /* 左边距 */ + 8 /* 与歌词间距 */
             : 0;
-        var controlsWidth = MediaControlsPanel.Visibility == Visibility.Visible
-            ? MediaControlsPanel.ActualWidth + 4 /* 右边距 */
-            : 0;
+        // 控制按钮移入悬停面板后不再常驻占位：歌词可用宽度 = 全宽 - 封面
+        var controlsWidth = 0;
         _textBaseLeft = coverWidth;
         var availableWidth = Math.Max(0, hostWidth - _textBaseLeft - controlsWidth);
 

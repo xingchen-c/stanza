@@ -25,6 +25,8 @@ public sealed class SmptcSessionService
     private GlobalSystemMediaTransportControlsSession? _session;
 
     private string _currentKey = string.Empty;
+    private string _currentTitle = string.Empty;
+    private string _currentArtist = string.Empty;
     private bool _switchingTrack;
     private string _switchKey = string.Empty;
     private int _switchStartedAt;
@@ -65,23 +67,17 @@ public sealed class SmptcSessionService
     /// <summary>当前 SMTC 会话（UI 渲染时读取时间线等）</summary>
     public GlobalSystemMediaTransportControlsSession? Session => _session;
 
-    /// <summary>当前歌曲 key（标题 + 歌手）</summary>
-    public string CurrentKey => _currentKey;
+    /// <summary>当前歌曲标题（悬停面板显示用）</summary>
+    public string CurrentTitle => _currentTitle;
+
+    /// <summary>当前歌曲歌手（悬停面板显示用）</summary>
+    public string CurrentArtist => _currentArtist;
 
     /// <summary>是否正在等待新歌歌词</summary>
     public bool IsSwitchingTrack => _switchingTrack;
 
-    /// <summary>切换触发时的歌曲 key（看门狗判断新歌是否已确认）</summary>
-    public string SwitchKey => _switchKey;
-
-    /// <summary>切歌开始时刻（TickCount）</summary>
-    public int SwitchStartedAt => _switchStartedAt;
-
     /// <summary>最近一次切歌开始（UTC 毫秒），与 SMTC Position 快照时间比较</summary>
     public long LastSwitchStartUtcMs => _lastSwitchStartUtcMs;
-
-    /// <summary>最近一次歌词就绪时刻（TickCount），识别同一轮切歌的迟到信号</summary>
-    public int LastSwitchCompletedAt => _lastSwitchCompletedAt;
 
     /// <summary>歌词库（UI 渲染读取行数据）</summary>
     public LyricsService Lyrics => _lyrics;
@@ -192,6 +188,8 @@ public sealed class SmptcSessionService
 
             var title = props.Title;
             var artist = props.Artist ?? string.Empty;
+            _currentTitle = title;
+            _currentArtist = artist;
 
             var key = $"{title}\u0001{artist}";
             _ = RefreshCoverAsync(props, key); // 切歌换封面；key 未变时内部直接跳过

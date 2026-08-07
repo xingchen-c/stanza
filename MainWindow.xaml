@@ -22,12 +22,12 @@
         <Grid.Resources>
             <!-- 播放控制按钮：Segoe MDL2 Assets 图标，透明底，悬停微亮 -->
             <Style x:Key="MediaButton" TargetType="Button">
-                <Setter Property="Width" Value="28" />
-                <Setter Property="Height" Value="28" />
-                <Setter Property="Margin" Value="2,0" />
-                <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
-                <Setter Property="FontSize" Value="13" />
-                <Setter Property="Foreground" Value="#BFFFFFFF" />
+                <Setter Property="Width" Value="26" />
+                <Setter Property="Height" Value="26" />
+                <Setter Property="Margin" Value="1,0" />
+                <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
+                <Setter Property="FontSize" Value="14" />
+                <Setter Property="Foreground" Value="White" />
                 <Setter Property="Background" Value="Transparent" />
                 <Setter Property="BorderThickness" Value="0" />
                 <Setter Property="Cursor" Value="Hand" />
@@ -39,11 +39,10 @@
                             </Border>
                             <ControlTemplate.Triggers>
                                 <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter TargetName="bd" Property="Background" Value="#22FFFFFF" />
-                                    <Setter Property="Foreground" Value="White" />
+                                    <Setter TargetName="bd" Property="Background" Value="#0FFFFFFF" />
                                 </Trigger>
                                 <Trigger Property="IsPressed" Value="True">
-                                    <Setter TargetName="bd" Property="Background" Value="#33FFFFFF" />
+                                    <Setter TargetName="bd" Property="Background" Value="#14FFFFFF" />
                                 </Trigger>
                             </ControlTemplate.Triggers>
                         </ControlTemplate>
@@ -86,26 +85,51 @@
             </Canvas>
         </Canvas>
 
-        <!-- 媒体区：封面（左）+ 播放控制按钮组（右），歌词在中间 -->
+        <!-- 媒体区：封面（左）常显；悬停面板（歌名/歌手 + 控制按钮）鼠标悬停在卡片上时显示 -->
         <Border x:Name="CoverBorder"
                 Width="36" Height="36"
-                Margin="6,0,0,0"
+                Margin="8,0,0,0"
                 HorizontalAlignment="Left" VerticalAlignment="Center"
                 CornerRadius="4"
                 Background="#22000000"
-                BorderBrush="#33FFFFFF" BorderThickness="1"
                 Visibility="Collapsed">
+            <!-- OpacityMask 用圆角矩形裁剪：Border.CornerRadius 不会裁剪子元素，Image 会直角铺满盖住圆角 -->
+            <Border.OpacityMask>
+                <VisualBrush Stretch="Fill">
+                    <VisualBrush.Visual>
+                        <Rectangle RadiusX="4" RadiusY="4" Width="36" Height="36" Fill="White" />
+                    </VisualBrush.Visual>
+                </VisualBrush>
+            </Border.OpacityMask>
             <Image x:Name="CoverImage" Stretch="UniformToFill" />
         </Border>
 
-        <StackPanel x:Name="MediaControlsPanel"
+        <!-- 悬停面板：按钮贴封面，歌名/歌手在右侧上下两行；无背景浮动，文字带阴影保证可读 -->
+        <StackPanel x:Name="HoverPanel"
                     Orientation="Horizontal"
                     HorizontalAlignment="Right" VerticalAlignment="Center"
-                    Margin="0,0,4,0"
+                    Margin="0,0,6,0"
                     Visibility="Collapsed">
-            <Button x:Name="PrevButton" Content="&#xE892;" Click="OnPrevClick" Style="{StaticResource MediaButton}" />
-            <Button x:Name="PlayPauseButton" Content="&#xE768;" Click="OnPlayPauseClick" Style="{StaticResource MediaButton}" />
-            <Button x:Name="NextButton" Content="&#xE893;" Click="OnNextClick" Style="{StaticResource MediaButton}" />
+            <StackPanel.Effect>
+                <DropShadowEffect BlurRadius="4" ShadowDepth="0" Opacity="0.8" Color="Black" />
+            </StackPanel.Effect>
+            <StackPanel Orientation="Horizontal">
+                <Button x:Name="PrevButton" Content="&#xE892;" Click="OnPrevClick" Style="{StaticResource MediaButton}" />
+                <Button x:Name="PlayPauseButton" Content="&#xE768;" Click="OnPlayPauseClick" Style="{StaticResource MediaButton}" />
+                <Button x:Name="NextButton" Content="&#xE893;" Click="OnNextClick" Style="{StaticResource MediaButton}" />
+            </StackPanel>
+            <StackPanel Orientation="Vertical" Margin="12,0,0,0" VerticalAlignment="Center">
+                <TextBlock x:Name="TrackTitleText"
+                           FontSize="12" FontWeight="SemiBold"
+                           Foreground="White"
+                           TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                           MaxWidth="120" />
+                <TextBlock x:Name="TrackArtistText"
+                           FontSize="10"
+                           Foreground="#BFFFFFFF"
+                           TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                           MaxWidth="120" />
+            </StackPanel>
         </StackPanel>
     </Grid>
 </Window>

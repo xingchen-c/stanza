@@ -1,5 +1,4 @@
 ﻿using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -13,7 +12,6 @@ using System.Windows.Threading;
 using Windows.Media.Control;
 using FluentLyrics.Models;
 using FluentLyrics.Services;
-using FluentLyrics.Services.Lyrics;
 using FluentLyrics.Services.Taskbar;
 
 namespace FluentLyrics;
@@ -32,7 +30,6 @@ public partial class MainWindow
     private const uint SwpNoactivate = 0x0010;
     private const double MarqueeEndPadding = 24; // 滚到最右侧时预留的空白
     private static readonly IntPtr HwndTopmost = new(-1);
-    private readonly LyricsService _lyrics = new();
     private readonly TaskbarService _taskbar = new();
     private readonly DispatcherTimer _ticker = new() { Interval = TimeSpan.FromMilliseconds(100) };
     private readonly TrayIconService _tray = new();
@@ -45,7 +42,9 @@ public partial class MainWindow
     private bool _dragging; // 调整模式下正在拖动卡片
     private bool _hiddenForFullscreen; // 前台窗口全屏（游戏/视频）时隐藏卡片
     private bool _hiddenForPlayback;
+    private bool _hoverShowing; // 鼠标悬停在卡片上：显示歌名/歌手 + 控制按钮
     private HwndSource? _hwndSource; // 窗口消息钩子（WM_NCHITTEST 区域点击穿透）
+    private int _lastFullscreenDiagTick = -5000; // 全屏检测诊断日志节流
     private double _lastClipWidth = -1; // 上次裁剪宽度（逐字/线性共用去重）
     private int _lastFullscreenCheckTick = -1000; // 全屏检测节流（每 500ms 查一次前台窗口）
     private double _lastProgress = -1; // 上次渲染的进度（0~1）
@@ -70,7 +69,6 @@ public partial class MainWindow
         _smtc = new SmptcSessionService(Dispatcher);
         _clickThrough = _settings.ClickThrough;
         _showMediaControls = _settings.ShowMediaControls;
-        MediaControlsPanel.Visibility = _showMediaControls ? Visibility.Visible : Visibility.Collapsed;
         ApplyLyricBrushes();
         _smtc.SetMediaControlsEnabled(_showMediaControls);
 
@@ -130,6 +128,9 @@ public partial class MainWindow
         _lastProgress = -1;
         CoverImage.Source = null;
         CoverBorder.Visibility = Visibility.Collapsed;
+        LyricViewport.Visibility = Visibility.Visible;
+        HoverPanel.Visibility = Visibility.Collapsed;
+        _hoverShowing = false;
         if (connected)
             _ticker.Start();
         else
@@ -176,6 +177,41 @@ public partial class MainWindow
         ReapplyLyricDisplay();
     }
 
+    /// <summary>悬停状态切换：隐藏歌词（保留滚动位置），显示"歌名/歌手 + 控制按钮"面板</summary>
+    private void ApplyHoverState()
+    {
+        if (_hoverShowing && _showMediaControls && !_hiddenForFullscreen)
+        {
+            TrackTitleText.Text = _smtc.CurrentTitle;
+            TrackArtistText.Text = _smtc.CurrentArtist;
+
+            // 面板紧贴封面右侧（封面隐藏时贴窗口左缘），不甩到窗口最右
+            var coverRight = CoverBorder.Visibility == Visibility.Visible
+                ? CoverBorder.Margin.Left + CoverBorder.ActualWidth
+                : 0;
+            // 曲目信息宽度：窗口宽 - 封面偏移 - 按钮组(3×26+2) - 间距，窄卡片自动压缩
+            var maxInfoWidth = Math.Max(60, Width - coverRight - 110);
+            TrackTitleText.MaxWidth = maxInfoWidth;
+            TrackArtistText.MaxWidth = maxInfoWidth;
+            // 信息区太窄时只留歌名，歌手行收起
+            TrackArtistText.Visibility = maxInfoWidth < 90
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+            HoverPanel.HorizontalAlignment = HorizontalAlignment.Left;
+            HoverPanel.Margin = new Thickness(coverRight + 8, 0, 0, 0);
+            // 隐藏歌词（保留布局与滚动位置），显示歌手信息 + 控制按钮
+            LyricViewport.Visibility = Visibility.Hidden;
+            HoverPanel.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            HoverPanel.HorizontalAlignment = HorizontalAlignment.Right;
+            HoverPanel.Margin = new Thickness(0, 0, 6, 0);
+            LyricViewport.Visibility = Visibility.Visible;
+            HoverPanel.Visibility = Visibility.Collapsed;
+        }
+    }
+
     /// <summary>媒体区：上一首</summary>
     private async void OnPrevClick(object sender, RoutedEventArgs e)
     {
@@ -215,9 +251,8 @@ public partial class MainWindow
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect lpRect);
 
-    [DllImport("gdi32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DeleteObject(IntPtr hObject);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder className, int maxCount);
 
     private void OnSourceInitialized(object? sender, EventArgs e)
     {
@@ -302,11 +337,11 @@ public partial class MainWindow
                 return true;
         }
 
-        if (MediaControlsPanel.Visibility == Visibility.Visible && MediaControlsPanel.ActualWidth > 0)
+        if (HoverPanel.Visibility == Visibility.Visible && HoverPanel.ActualWidth > 0)
         {
-            var tl = MediaControlsPanel.PointToScreen(new System.Windows.Point(0, 0));
-            var br = MediaControlsPanel.PointToScreen(
-                new System.Windows.Point(MediaControlsPanel.ActualWidth, MediaControlsPanel.ActualHeight));
+            var tl = HoverPanel.PointToScreen(new System.Windows.Point(0, 0));
+            var br = HoverPanel.PointToScreen(
+                new System.Windows.Point(HoverPanel.ActualWidth, HoverPanel.ActualHeight));
             return screenX >= tl.X && screenX <= br.X && screenY >= tl.Y && screenY <= br.Y;
         }
 
@@ -314,25 +349,37 @@ public partial class MainWindow
     }
 
     /// <summary>
-    ///     前台窗口是否全屏（游戏/全屏视频）：窗口矩形完全覆盖所在屏幕。
-    ///     全屏时隐藏歌词卡片，避免置顶窗口盖在全屏内容上。
+    ///     前台窗口是否盖住了任务栏（游戏/全屏视频等）：盖住任务栏 = 用户看不到任务栏，
+    ///     组件贴在任务栏上也不该显示。判断"前台窗口矩形覆盖任务栏 ≥95%"。
     /// </summary>
     private bool IsForegroundFullscreen()
     {
         var hwnd = GetForegroundWindow();
-        if (hwnd == IntPtr.Zero)
-            return false;
-
-        // 自己的窗口（调整位置模式等）不参与判断
-        if (hwnd == new WindowInteropHelper(this).Handle)
+        if (hwnd == IntPtr.Zero || hwnd == new WindowInteropHelper(this).Handle)
             return false;
 
         if (!GetWindowRect(hwnd, out var rect))
             return false;
 
-        var bounds = System.Windows.Forms.Screen.FromHandle(hwnd).Bounds;
-        return rect.Left <= bounds.Left && rect.Top <= bounds.Top &&
-               rect.Right >= bounds.Right && rect.Bottom >= bounds.Bottom;
+        if (_taskbar.GetTaskbarRectPixels() is not { } tray)
+            return false;
+
+        var coverW = Math.Min(rect.Right, tray.Right) - Math.Max(rect.Left, tray.Left);
+        var coverH = Math.Min(rect.Bottom, tray.Bottom) - Math.Max(rect.Top, tray.Top);
+        var covered = coverW >= tray.Width * 0.95 && coverH >= tray.Height * 0.95;
+
+        // [诊断] 节流打印，确认判定依据（前台窗口/任务栏矩形/是否覆盖）
+        var now = Environment.TickCount;
+        if (now - _lastFullscreenDiagTick > 5000)
+        {
+            _lastFullscreenDiagTick = now;
+            var name = new System.Text.StringBuilder(128);
+            GetClassName(hwnd, name, 128);
+            AppLog.Debug($"全屏检测: 前台='{name}' 窗口=({rect.Left},{rect.Top},{rect.Right},{rect.Bottom}) " +
+                         $"任务栏=({tray.Left},{tray.Top},{tray.Right},{tray.Bottom}) 覆盖={covered}");
+        }
+
+        return covered;
     }
 
     private void PositionCard()
@@ -609,11 +656,13 @@ public partial class MainWindow
 
         // 媒体区开关：通知服务（封面加载开关），UI 侧隐藏/恢复封面与按钮
         _smtc.SetMediaControlsEnabled(_showMediaControls);
-        MediaControlsPanel.Visibility = _showMediaControls ? Visibility.Visible : Visibility.Collapsed;
         if (!_showMediaControls)
         {
             CoverImage.Source = null;
             CoverBorder.Visibility = Visibility.Collapsed;
+            LyricViewport.Visibility = Visibility.Visible;
+            HoverPanel.Visibility = Visibility.Collapsed;
+            _hoverShowing = false;
         }
 
         ApplyWindowStyles(); // 更新点击穿透需要重设窗口扩展样式
@@ -656,8 +705,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    ///     定时器：每拍检查播放状态驱动显隐；检测切歌（播放中位置大幅回退到开头）时立即
-    ///     清掉旧歌词显示"正在获取歌词…"，避免新歌开头还闪上一首歌的歌词。
+    ///     定时器：每拍检查播放状态与全屏/悬停状态驱动显隐；渲染当前歌词进度。
+    ///     切歌状态机（位置回退检测/误判恢复/看门狗）由 SmptcSessionService 统一管理。
     /// </summary>
     private void OnTickerTick(object? sender, EventArgs e)
     {
@@ -680,6 +729,24 @@ public partial class MainWindow
                 _hiddenForFullscreen = fullscreen;
                 PositionCard();
             }
+        }
+
+        // 悬停检测：光标在卡片内 → 显示歌名/歌手 + 控制按钮（歌词区仍点击穿透，用光标轮询感知）
+        if (Visibility == Visibility.Visible)
+        {
+            var cursor = GetCursorPosDips();
+            var hovering = cursor.X >= Left && cursor.X <= Left + Width &&
+                           cursor.Y >= Top && cursor.Y <= Top + Height;
+            if (hovering != _hoverShowing)
+            {
+                _hoverShowing = hovering;
+                ApplyHoverState();
+            }
+        }
+        else if (_hoverShowing)
+        {
+            _hoverShowing = false;
+            HoverPanel.Visibility = Visibility.Collapsed;
         }
 
         // 播放状态变化 → 立即刷新卡片显隐（PlaybackInfoChanged 事件之外的 100ms 兜底）
