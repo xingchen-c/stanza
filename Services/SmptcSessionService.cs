@@ -98,6 +98,21 @@ public sealed class SmptcSessionService
         }
     }
 
+    /// <summary>是否处于"正在播放"（含切歌中的 Changing）；查询失败按播放处理，走原有等待逻辑</summary>
+    private static bool IsActuallyPlaying(GlobalSystemMediaTransportControlsSession session)
+    {
+        try
+        {
+            var status = session.GetPlaybackInfo().PlaybackStatus;
+            return status is GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing
+                or GlobalSystemMediaTransportControlsSessionPlaybackStatus.Changing;
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
     private void UpdateSession(GlobalSystemMediaTransportControlsSession? session)
     {
         if (_session is not null)
@@ -125,7 +140,7 @@ public sealed class SmptcSessionService
             _coverLoaded = false;
             CoverChanged?.Invoke(string.Empty, null);
             SessionChanged?.Invoke(false);
-            StatusChanged?.Invoke("未检测到播放会话。请先播放 QQ 音乐（需在设置中开启 SMTC）。");
+            StatusChanged?.Invoke("等待播放音乐…");
             return;
         }
 
@@ -171,22 +186,36 @@ public sealed class SmptcSessionService
         try
         {
             var props = await session.TryGetMediaPropertiesAsync();
+            var title = props.Title;
+            var artist = props.Artist ?? string.Empty;
+            _currentTitle = title;
+            _currentArtist = artist;
+
+            // 未播放（暂停/停止/未开始）：待机状态——显示"歌名 - 歌手"或"等待播放音乐…"，
+            // 不进入切歌等待/歌词加载流程（避免误导性的"正在获取歌词…"）。
+            // 已有歌词（播放中暂停）保持显示，不覆盖。
+            if (!IsActuallyPlaying(session))
+            {
+                _switchingTrack = false;
+                var idleKey = string.IsNullOrWhiteSpace(title) ? string.Empty : $"{title}\u0001{artist}";
+                _ = RefreshCoverAsync(props, idleKey);
+                if (_lyrics.Lines.Count == 0)
+                    StatusChanged?.Invoke(string.IsNullOrWhiteSpace(title)
+                        ? "等待播放音乐…"
+                        : string.IsNullOrWhiteSpace(artist) ? title : $"{title} - {artist}");
+                return;
+            }
 
             // 切歌瞬间 SMTC 元数据可能短暂为空：不能把空值当成"未知歌曲"去搜索，
             // 否则会污染当前歌曲 key，并让轮询误以为"新歌已确认"而提前终止。
             // 这里只等待，不更新任何状态，由轮询/后续事件重读。
-            if (string.IsNullOrWhiteSpace(props.Title))
+            if (string.IsNullOrWhiteSpace(title))
             {
                 AppLog.Debug("元数据未就绪（空标题），等待轮询重读");
                 if (!_switchingTrack)
                     BeginTrackSwitch("元数据未就绪"); // 顺带启动元数据轮询，等真实歌名出现
                 return;
             }
-
-            var title = props.Title;
-            var artist = props.Artist ?? string.Empty;
-            _currentTitle = title;
-            _currentArtist = artist;
 
             var key = $"{title}\u0001{artist}";
             _ = RefreshCoverAsync(props, key); // 切歌换封面；key 未变时内部直接跳过
@@ -589,6 +618,13 @@ public sealed class SmptcSessionService
                 return;
             }
             _lastPlaybackStatus = status;
+
+            // 从未播放/停止状态开始播放且当前没有歌词 → 主动刷新加载。
+            // 播放开始时 SMTC 可能只推 PlaybackInfoChanged 而不推 MediaPropertiesChanged，
+            // 不主动刷的话歌词永远不会加载（待机分支不进入切歌流程）。
+            if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing &&
+                _lyrics.Lines.Count == 0)
+                _ = RefreshTrackAsync();
 
             // 切歌早期信号：旧歌停止（Stopped）→ 新歌加载（Changing），立即清旧歌词进入等待。
             // 拖动进度条只改 Position，不会触发 PlaybackInfoChanged，天然不会误判。

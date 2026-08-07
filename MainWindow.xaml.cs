@@ -482,7 +482,9 @@ public partial class MainWindow
     /// <summary>托盘菜单：打开设置窗口；保存后重新应用设置</summary>
     private void OpenSettings()
     {
-        var window = new SettingsWindow(_settings) { Owner = this };
+        // 不设 Owner：主窗口是置顶的，附属窗口会跟着进置顶层；设置窗口应是普通窗口。
+        // ShowDialog 保持模态，居中改为屏幕中心（主窗口在任务栏，相对它居中会偏出屏幕）。
+        var window = new SettingsWindow(_settings);
         window.Saved += () =>
         {
             _settings = AppSettingsService.Load();
