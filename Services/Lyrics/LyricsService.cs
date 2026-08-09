@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using FluentLyrics.Models;
 
 namespace FluentLyrics.Services.Lyrics;
@@ -51,21 +52,30 @@ public sealed class LyricsService
             return diskStatus;
         }
 
-        // 总预算 8 秒：Lyricify 的 QQ 接口偶发挂起（默认 HttpClient 超时可达 100s），
-        // 不能让卡死的请求把整条切歌流程拖住，超时即视为"未找到"，交给上层重试。
-        var deadline = Task.Delay(TimeSpan.FromSeconds(8));
+        // 预算拆成"每源独立 + 总上限"：Lyricify 的 QQ 接口偶发挂起（默认 HttpClient 超时可达 100s）
+        // 时，LRCLIB 兜底源仍能拿到自己的时间，而不是被 QQ 的 8 秒占满后直接放弃。
+        var stopwatch = Stopwatch.StartNew();
+        const double providerBudgetSec = 5.0; // 每个源最多等 5 秒
+        const double totalBudgetSec = 8.0;    // 整条加载链最多 8 秒
         foreach (var provider in _providers)
         {
             AppLog.Debug($"尝试歌词源 {provider.Name}: '{title}' / {artist}");
+            var remainingSec = Math.Min(providerBudgetSec, Math.Max(0, totalBudgetSec - stopwatch.Elapsed.TotalSeconds));
+            if (remainingSec <= 0)
+            {
+                AppLog.Warn($"歌词源 {provider.Name} 已无剩余预算，本轮放弃");
+                break;
+            }
+
             LyricsResult result;
             try
             {
                 var loadTask = provider.LoadAsync(title, artist, durationMs);
-                var completed = await Task.WhenAny(loadTask, deadline);
+                var completed = await Task.WhenAny(loadTask, Task.Delay(TimeSpan.FromSeconds(remainingSec)));
                 if (completed != loadTask)
                 {
-                    AppLog.Warn($"歌词源 {provider.Name} 超过总预算 8s 未返回，本轮放弃");
-                    break; // 总超时：该源（及后续源）本轮不再等待，直接返回 NotFound
+                    AppLog.Warn($"歌词源 {provider.Name} 超过 {remainingSec:F1}s 未返回，本轮放弃");
+                    break; // 该源超时：本轮不再等待后续源，交给上层重试/补抓
                 }
 
                 result = await loadTask;

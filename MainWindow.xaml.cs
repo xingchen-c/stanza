@@ -28,8 +28,10 @@ public partial class MainWindow
     private const uint SwpNoactivate = 0x0010;
     private const double MarqueeEndPadding = 24; // 滚到最右侧时预留的空白
     private static readonly IntPtr HwndTopmost = new(-1);
+    private static readonly string[] ShellWindowClasses = ["Shell_TrayWnd", "Shell_SecondaryTrayWnd", "Progman", "WorkerW"];
     private readonly TaskbarService _taskbar = new();
     private readonly DispatcherTimer _ticker = new() { Interval = TimeSpan.FromMilliseconds(100) };
+    private readonly DispatcherTimer _fullscreenTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly TrayIconService _tray = new();
     private readonly Dictionary<string, double[]> _wordBoundaryCache = new(); // 行文本 → 各字结束位置的像素宽度
     private bool _adjustingPosition; // 托盘"调整歌词位置"模式（临时关闭点击穿透）
@@ -40,11 +42,11 @@ public partial class MainWindow
     private bool _dragging; // 调整模式下正在拖动卡片
     private bool _hiddenForFullscreen; // 前台窗口全屏（游戏/视频）时隐藏卡片
     private bool _hiddenForPlayback;
+    private bool _userHidden; // 托盘手动隐藏：自动定位不得重新显示
     private bool _hoverShowing; // 鼠标悬停在卡片上：显示歌名/歌手 + 控制按钮
     private HwndSource? _hwndSource; // 窗口消息钩子（WM_NCHITTEST 区域点击穿透）
     private int _lastFullscreenDiagTick = -5000; // 全屏检测诊断日志节流
     private double _lastClipWidth = -1; // 上次裁剪宽度（逐字/线性共用去重）
-    private int _lastFullscreenCheckTick = -1000; // 全屏检测节流（每 500ms 查一次前台窗口）
     private double _lastProgress = -1; // 上次渲染的进度（0~1）
     private Brush _lyricBrush = Brushes.White; // 状态文本/亮色层画刷
     private Color _lyricColor = Colors.White;
@@ -80,8 +82,15 @@ public partial class MainWindow
 
         Loaded += OnLoaded;
         SourceInitialized += OnSourceInitialized;
-        DpiChanged += (_, _) => PositionCard();
+        DpiChanged += (_, _) =>
+        {
+            _wordBoundaryCache.Clear(); // 逐字宽度依赖 DPI，跨缩放显示器移动后必须重算
+            PositionCard();
+        };
         _ticker.Tick += OnTickerTick;
+        // 全屏检测独立于播放会话：QQ 音乐未运行（无 SMTC 会话）时也要能隐藏卡片
+        _fullscreenTimer.Tick += (_, _) => UpdateFullscreenState();
+        _fullscreenTimer.Start();
         LyricHost.SizeChanged += (_, _) => ReapplyLyricDisplay();
         _taskbar.TaskbarChanged += PositionCard;
         _taskbar.ApplySettings(_settings);
@@ -107,7 +116,7 @@ public partial class MainWindow
         {
             safetyTimer.Stop();
             PositionCard(); // 重新定位一次：定位成功自己显示，组件隐藏则保持隐藏
-            if (Visibility != Visibility.Visible && !_taskbar.HasTaskbar)
+            if (Visibility != Visibility.Visible && !_taskbar.HasTaskbar && !_userHidden)
                 Visibility = Visibility.Visible; // 任务栏还没就绪才兜底显示
         };
 
@@ -247,6 +256,13 @@ public partial class MainWindow
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect lpRect);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -349,11 +365,22 @@ public partial class MainWindow
     /// <summary>
     ///     前台窗口是否盖住了任务栏（游戏/全屏视频等）：盖住任务栏 = 用户看不到任务栏，
     ///     组件贴在任务栏上也不该显示。判断"前台窗口矩形覆盖任务栏 ≥95%"。
+    ///     先排除系统外壳窗口（桌面/任务栏）和自身窗口：它们矩形覆盖屏幕，但不是全屏应用。
     /// </summary>
     private bool IsForegroundFullscreen()
     {
         var hwnd = GetForegroundWindow();
-        if (hwnd == IntPtr.Zero || hwnd == new WindowInteropHelper(this).Handle)
+        if (hwnd == IntPtr.Zero || !IsWindowVisible(hwnd))
+            return false;
+
+        // 自身进程窗口（主窗口/设置窗口）：不参与全屏判定
+        GetWindowThreadProcessId(hwnd, out var pid);
+        if (pid == (uint)Environment.ProcessId)
+            return false;
+
+        // 桌面（Progman/WorkerW）与任务栏（Shell_TrayWnd 等）聚焦（Win+D、点桌面、Win+B）时
+        // 矩形天然覆盖屏幕/任务栏，不能误判为全屏应用
+        if (IsShellWindow(hwnd))
             return false;
 
         if (!GetWindowRect(hwnd, out var rect))
@@ -378,6 +405,26 @@ public partial class MainWindow
         }
 
         return covered;
+    }
+
+    /// <summary>独立的全屏检测定时器回调：不依赖播放会话，任何前台状态下都检查</summary>
+    private void UpdateFullscreenState()
+    {
+        var fullscreen = IsForegroundFullscreen();
+        // 全屏期间若用户手动显示卡片（托盘"显示/隐藏"），下一拍强制再隐藏
+        if (fullscreen == _hiddenForFullscreen && (!fullscreen || Visibility == Visibility.Collapsed))
+            return;
+
+        _hiddenForFullscreen = fullscreen;
+        PositionCard();
+    }
+
+    /// <summary>是否是桌面/任务栏等系统外壳窗口（矩形覆盖屏幕但不是全屏应用）</summary>
+    private static bool IsShellWindow(IntPtr hwnd)
+    {
+        var className = new System.Text.StringBuilder(128);
+        GetClassName(hwnd, className, 128);
+        return ShellWindowClasses.Contains(className.ToString());
     }
 
     private void PositionCard()
@@ -412,9 +459,9 @@ public partial class MainWindow
         var cardWidth = _settings.AutoCardWidth
             ? Math.Max(120, card.Width)
             : Math.Max(120, _settings.CardWidth);
-        // 手动宽度 + 媒体控制开启时，保证封面(42)+按钮(~100)+最小歌词区放得下，
+        // 媒体控制开启时（无论自动/手动宽度），保证封面(42)+按钮(~100)+最小歌词区放得下，
         // 否则按钮被挤出、歌词在按钮下面滚（看起来像跑马灯失效）
-        if (!_settings.AutoCardWidth && _showMediaControls)
+        if (_showMediaControls)
             cardWidth = Math.Max(cardWidth, 240);
         cardWidth = Math.Min(cardWidth, taskbarRect.Width); // 不超出任务栏
         var cardHeight = Math.Max(taskbarRect.Height, 36);
@@ -470,10 +517,12 @@ public partial class MainWindow
     {
         if (Visibility == Visibility.Visible)
         {
+            _userHidden = true;
             Visibility = Visibility.Collapsed;
         }
         else
         {
+            _userHidden = false;
             PositionCard();
             Visibility = Visibility.Visible;
         }
@@ -517,7 +566,10 @@ public partial class MainWindow
         }
 
         if (Visibility != Visibility.Visible)
+        {
+            _userHidden = false;
             Visibility = Visibility.Visible;
+        }
 
         _adjustingPosition = true;
         _clickThrough = false;
@@ -700,12 +752,14 @@ public partial class MainWindow
     /// <summary>定位成功后再显示，避免启动瞬间以默认位置盖住组件</summary>
     private void ShowCardIfReady()
     {
+        if (_userHidden)
+            return;
         if (Visibility != Visibility.Visible)
             Visibility = Visibility.Visible;
     }
 
     /// <summary>
-    ///     定时器：每拍检查播放状态与全屏/悬停状态驱动显隐；渲染当前歌词进度。
+    ///     定时器：每拍检查播放状态与悬停状态驱动显隐；渲染当前歌词进度。
     ///     切歌状态机（位置回退检测/误判恢复/看门狗）由 SmptcSessionService 统一管理。
     /// </summary>
     private void OnTickerTick(object? sender, EventArgs e)
@@ -717,19 +771,6 @@ public partial class MainWindow
         // 调整位置模式下不渲染歌词进度，避免卡拉OK裁剪盖住提示文字
         if (_adjustingPosition)
             return;
-
-        // 全屏应用（游戏/全屏视频）检测：每 500ms 查一次前台窗口，全屏时隐藏卡片
-        var now = Environment.TickCount;
-        if (now - _lastFullscreenCheckTick > 500)
-        {
-            _lastFullscreenCheckTick = now;
-            var fullscreen = IsForegroundFullscreen();
-            if (fullscreen != _hiddenForFullscreen)
-            {
-                _hiddenForFullscreen = fullscreen;
-                PositionCard();
-            }
-        }
 
         // 悬停检测：光标在卡片内 → 显示歌名/歌手 + 控制按钮（歌词区仍点击穿透，用光标轮询感知）
         if (Visibility == Visibility.Visible)
@@ -824,6 +865,8 @@ public partial class MainWindow
 
     protected override void OnClosed(EventArgs e)
     {
+        _fullscreenTimer.Stop();
+        _ticker.Stop();
         _tray.Dispose();
         _taskbar.Dispose();
         base.OnClosed(e);

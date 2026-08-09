@@ -27,6 +27,8 @@ public sealed class TaskbarService : IDisposable
     private readonly ITaskbarWidgetLocator[] _locators;
     private readonly DispatcherTimer _pollTimer;
     private readonly object _sync = new();
+    private int _refreshRunning; // 防重入：上一轮探测未结束时跳过本轮，避免 Shell 繁忙时任务堆积
+    private volatile bool _disposed;
 
     // 卡片区域缓存（屏幕物理像素）：单次探测失败保留上次结果，避免卡片跳位
     private PixelRect _cardRegion;
@@ -108,6 +110,7 @@ public sealed class TaskbarService : IDisposable
 
     public void Dispose()
     {
+        _disposed = true;
         _pollTimer.Stop();
         SystemEvents.DisplaySettingsChanged -= OnSystemEvent;
         SystemEvents.UserPreferenceChanged -= OnSystemEvent;
@@ -171,115 +174,137 @@ public sealed class TaskbarService : IDisposable
     /// <summary>后台线程执行探测：不改 UI 状态，计算完成后短锁写回并在 UI 线程触发事件</summary>
     private void RefreshCore()
     {
-        // 快照配置（短锁读取，避免与 ApplySettings 竞争）
-        HashSet<string> enabledKeys;
-        string placement;
-        bool hasCardRegion;
-        bool wasAnchorBased;
-        lock (_sync)
+        if (_disposed || Interlocked.CompareExchange(ref _refreshRunning, 1, 0) != 0)
+            return;
+
+        try
         {
-            enabledKeys = _enabledKeys;
-            placement = _placementDirection;
-            hasCardRegion = _hasCardRegion;
-            wasAnchorBased = _wasAnchorBased;
-        }
+            // 快照配置（短锁读取，避免与 ApplySettings 竞争）
+            HashSet<string> enabledKeys;
+            string placement;
+            bool hasCardRegion;
+            bool wasAnchorBased;
+            lock (_sync)
+            {
+                enabledKeys = _enabledKeys;
+                placement = _placementDirection;
+                hasCardRegion = _hasCardRegion;
+                wasAnchorBased = _wasAnchorBased;
+            }
 
-        // 多显示器：枚举所有任务栏，优先选"探到锚点组件"的那条；找不到时用第一条（主任务栏）兜底
-        var chosen = IntPtr.Zero;
-        Rect chosenRect = default;
-        var chosenPrimary = true;
-        PixelRect? widget = null;
-        PixelRect? start = null;
+            // 多显示器：枚举所有任务栏，优先选"探到锚点组件"的那条；找不到时用第一条（主任务栏）兜底
+            var chosen = IntPtr.Zero;
+            Rect chosenRect = default;
+            var chosenPrimary = true;
+            PixelRect? widget = null;
+            PixelRect? start = null;
 
-        foreach (var hwnd in FindTaskbarHandles())
-        {
-            if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out var rect) || rect.Width <= 0 || rect.Height <= 0)
-                continue;
+            foreach (var hwnd in FindTaskbarHandles())
+            {
+                if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out var rect) || rect.Width <= 0 || rect.Height <= 0)
+                    continue;
 
-            var tray = new PixelRect(rect.Left, rect.Top, rect.Right, rect.Bottom);
-            var detected = DetectAnchorWidget(hwnd, tray, enabledKeys);
-            var startRect = DetectStartButtonRect(hwnd);
+                var tray = new PixelRect(rect.Left, rect.Top, rect.Right, rect.Bottom);
+                var detected = DetectAnchorWidget(hwnd, tray, enabledKeys);
+                var startRect = DetectStartButtonRect(hwnd);
+
+                if (chosen == IntPtr.Zero)
+                {
+                    chosen = hwnd;
+                    chosenRect = rect;
+                    chosenPrimary = GetTaskbarClass(hwnd) == PrimaryTaskbarClass;
+                    widget = detected;
+                    start = startRect;
+                }
+
+                if (detected is not null)
+                {
+                    chosen = hwnd;
+                    chosenRect = rect;
+                    chosenPrimary = GetTaskbarClass(hwnd) == PrimaryTaskbarClass;
+                    widget = detected;
+                    start = startRect;
+                    break;
+                }
+            }
 
             if (chosen == IntPtr.Zero)
             {
-                chosen = hwnd;
-                chosenRect = rect;
-                chosenPrimary = GetTaskbarClass(hwnd) == PrimaryTaskbarClass;
-                widget = detected;
-                start = startRect;
+                if (!hasCardRegion)
+                    AppLog.Warn("未找到任何任务栏窗口，等待下一轮轮询");
+                return;
             }
 
-            if (detected is not null)
+            var trayRect = new PixelRect(chosenRect.Left, chosenRect.Top, chosenRect.Right, chosenRect.Bottom);
+
+            // 短锁：写回探测结果 + 签名判断（探测本身不持锁，避免阻塞 UI 读取）
+            bool changed;
+            lock (_sync)
             {
-                chosen = hwnd;
-                chosenRect = rect;
-                chosenPrimary = GetTaskbarClass(hwnd) == PrimaryTaskbarClass;
-                widget = detected;
-                start = startRect;
-                break;
-            }
-        }
-
-        if (chosen == IntPtr.Zero)
-        {
-            if (!hasCardRegion)
-                AppLog.Warn("未找到任何任务栏窗口，等待下一轮轮询");
-            return;
-        }
-
-        var trayRect = new PixelRect(chosenRect.Left, chosenRect.Top, chosenRect.Right, chosenRect.Bottom);
-
-        // 短锁：写回探测结果 + 签名判断（探测本身不持锁，避免阻塞 UI 读取）
-        bool changed;
-        lock (_sync)
-        {
-            // 锚点组件暂隐（暂停/切歌过渡）时保留上次选中的任务栏与卡片区域，避免卡片跳到别处
-            if (widget is null && hasCardRegion && wasAnchorBased)
-            {
-                _isWidgetPresent = false;
-            }
-            else
-            {
-                _taskbarHwnd = chosen;
-                _taskbarRect = chosenRect;
-                _isPrimaryTaskbar = chosenPrimary;
-
-                var card = widget is { } w
-                    ? ComputeAnchorCardRegion(trayRect, w, start, placement, chosenPrimary) ??
-                      ComputeFallbackRegion(trayRect, start, chosenPrimary)
-                    : ComputeIndependentRegion(chosen, trayRect, enabledKeys) ??
-                      ComputeFallbackRegion(trayRect, start, chosenPrimary);
-
-                _wasAnchorBased = widget is not null;
-                if (card is { } c)
+                // 锚点组件暂隐（暂停/切歌过渡）时保留上次选中的任务栏与卡片区域，避免卡片跳到别处
+                if (widget is null && hasCardRegion && wasAnchorBased)
                 {
-                    _cardRegion = c;
-                    _hasCardRegion = true;
+                    _isWidgetPresent = false;
+                }
+                else
+                {
+                    _taskbarHwnd = chosen;
+                    _taskbarRect = chosenRect;
+                    _isPrimaryTaskbar = chosenPrimary;
+
+                    var card = widget is { } w
+                        ? ComputeAnchorCardRegion(trayRect, w, start, placement, chosenPrimary) ??
+                          ComputeFallbackRegion(trayRect, start, chosenPrimary)
+                        : ComputeIndependentRegion(chosen, trayRect, enabledKeys) ??
+                          ComputeFallbackRegion(trayRect, start, chosenPrimary);
+
+                    _wasAnchorBased = widget is not null;
+                    if (card is { } c)
+                    {
+                        _cardRegion = c;
+                        _hasCardRegion = true;
+                    }
+
+                    _isWidgetPresent = widget is not null;
                 }
 
-                _isWidgetPresent = widget is not null;
+                // 签名：任务栏句柄 + 矩形 + 卡片区域 + 组件显隐 + 白名单 + 放置方向
+                var signature = $"{_taskbarHwnd.ToInt64()}|{_taskbarRect.Left},{_taskbarRect.Top},{_taskbarRect.Right},{_taskbarRect.Bottom}|" +
+                                (_hasCardRegion
+                                    ? $"{_cardRegion.Left},{_cardRegion.Top},{_cardRegion.Right},{_cardRegion.Bottom}"
+                                    : "-") + "|" +
+                                _isWidgetPresent + "|" +
+                                string.Join(",", enabledKeys.OrderBy(k => k)) + "|" +
+                                placement;
+
+                changed = signature != _layoutSignature;
+                if (changed)
+                    _layoutSignature = signature;
             }
 
-            // 签名：任务栏句柄 + 矩形 + 卡片区域 + 组件显隐 + 白名单 + 放置方向
-            var signature = $"{_taskbarHwnd.ToInt64()}|{_taskbarRect.Left},{_taskbarRect.Top},{_taskbarRect.Right},{_taskbarRect.Bottom}|" +
-                            (_hasCardRegion
-                                ? $"{_cardRegion.Left},{_cardRegion.Top},{_cardRegion.Right},{_cardRegion.Bottom}"
-                                : "-") + "|" +
-                            _isWidgetPresent + "|" +
-                            string.Join(",", enabledKeys.OrderBy(k => k)) + "|" +
-                            placement;
-
-            changed = signature != _layoutSignature;
             if (changed)
-                _layoutSignature = signature;
+            {
+                AppLog.Info($"任务栏定位更新: 任务栏=({_taskbarRect.Left},{_taskbarRect.Top},{_taskbarRect.Right},{_taskbarRect.Bottom}) " +
+                            $"卡片={(_hasCardRegion ? $"({_cardRegion.Left},{_cardRegion.Top},{_cardRegion.Right},{_cardRegion.Bottom})" : "无")} " +
+                            $"组件可见={_isWidgetPresent} 白名单=[{string.Join(",", enabledKeys)}] 方向={placement}");
+                try
+                {
+                    if (!_disposed)
+                        _dispatcher.BeginInvoke(() =>
+                        {
+                            if (!_disposed)
+                                TaskbarChanged?.Invoke();
+                        });
+                }
+                catch
+                {
+                    // 窗口已关闭 / 调度器已停止：忽略在途事件
+                }
+            }
         }
-
-        if (changed)
+        finally
         {
-            AppLog.Info($"任务栏定位更新: 任务栏=({_taskbarRect.Left},{_taskbarRect.Top},{_taskbarRect.Right},{_taskbarRect.Bottom}) " +
-                        $"卡片={(_hasCardRegion ? $"({_cardRegion.Left},{_cardRegion.Top},{_cardRegion.Right},{_cardRegion.Bottom})" : "无")} " +
-                        $"组件可见={_isWidgetPresent} 白名单=[{string.Join(",", enabledKeys)}] 方向={placement}");
-            _dispatcher.BeginInvoke(() => TaskbarChanged?.Invoke());
+            Interlocked.Exchange(ref _refreshRunning, 0);
         }
     }
 

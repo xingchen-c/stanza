@@ -36,6 +36,7 @@ public static class LyricsCacheService
             entry.LastUsedUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             status = entry.Status;
             lines = entry.Lines.Select(FromDto).ToList();
+            Save(); // 最近使用时间落盘：重启后 LRU 淘汰顺序不失真（命中频率低，写开销可忽略）
             return true;
         }
     }

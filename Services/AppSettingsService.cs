@@ -33,9 +33,19 @@ public static class AppSettingsService
     /// <summary>保存设置</summary>
     public static void Save(AppSettings settings)
     {
-        Directory.CreateDirectory(SettingsDir);
-        var json = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
-        File.WriteAllText(SettingsPath, json);
+        try
+        {
+            Directory.CreateDirectory(SettingsDir);
+            var json = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
+            // 先写临时文件再替换，避免写一半崩溃留下损坏配置（与歌词缓存一致）
+            var tmp = SettingsPath + ".tmp";
+            File.WriteAllText(tmp, json);
+            File.Move(tmp, SettingsPath, true);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("保存设置失败", ex);
+        }
     }
 
     /// <summary>应用开机自启（注册表 HKCU Run 键）</summary>
