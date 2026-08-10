@@ -33,9 +33,7 @@ public sealed class SmptcSessionService
     private int _lastSwitchCompletedAt = -1;
     private double _lastEndTimeMs = -1;
     private int _lastTickPositionMs = -1;
-    private bool _lyricsRetryPending;
-    private CancellationTokenSource? _notFoundRefetchCts; // 后台补抓循环
-    private int _notFoundRetryAttempt;                    // 后台补抓已尝试次数
+    private CancellationTokenSource? _recoveryCts;        // "未找到歌词"恢复调度（快速重试 + 后台补抓）
     private string _coverKey = string.Empty;
     private bool _coverLoaded;
     private bool _mediaControlsEnabled;
@@ -122,7 +120,7 @@ public sealed class SmptcSessionService
 
     private void UpdateSession(GlobalSystemMediaTransportControlsSession? session)
     {
-        CancelNotFoundRefetch(); // 会话变化/断开：旧歌的补抓循环立即作废
+        CancelNotFoundRecovery(); // 会话变化/断开：旧歌的恢复调度立即作废
 
         if (_session is not null)
         {
@@ -238,7 +236,7 @@ public sealed class SmptcSessionService
                 return;
 
             // 确认切到新歌：取消旧歌的"未找到歌词"补抓循环
-            CancelNotFoundRefetch();
+            CancelNotFoundRecovery();
 
             // 统一走 BeginTrackSwitch 记录切换起点（Stopped/时长变化可能已触发；元数据先到时这里兜底）
             if (!_switchingTrack)
@@ -247,20 +245,7 @@ public sealed class SmptcSessionService
             _currentKey = key;
             AppLog.Info($"开始加载歌词: {title} / {artist}");
 
-            // 时长尽量带上，能提高 QQ 搜索的匹配准确度；拿不到也没关系
-            int? durationMs = null;
-            try
-            {
-                var endTime = session.GetTimelineProperties().EndTime;
-                if (endTime > TimeSpan.Zero)
-                    durationMs = (int)endTime.TotalMilliseconds;
-            }
-            catch
-            {
-                // 某些播放器不提供时长，忽略
-            }
-
-            var result = await _lyrics.LoadAsync(title, artist, durationMs);
+            var result = await LoadLyricsOnceAsync(title, artist);
 
             // 等待期间可能已经切到下一首歌，旧结果直接丢弃
             if (key != _currentKey)
@@ -286,13 +271,16 @@ public sealed class SmptcSessionService
                 }
 
             TrackLyricsChanged?.Invoke(key, result);
-            if (snapshotReady)
+            // NotFound 先不显示"未找到歌词"：保留"正在获取歌词…"占位，等 1.2s 快速重试。
+            // QQ 首次匹配常因切歌瞬间旧时长失败，立即显示"未找到"会造成闪烁。
+            // Instrumental（纯音乐）是确定结果，照常立即显示。
+            if (snapshotReady && result != LyricsLoadResult.NotFound)
                 StatusChanged?.Invoke(StatusTextFor(result));
 
             // 偶发：切歌瞬间搜索失败 / QQ 接口限流。NotFound 不缓存，延迟重试一次，
             // 避免"未找到歌词"被定死整首歌（重试期间已有占位文本，无闪烁）。
             if (result == LyricsLoadResult.NotFound)
-                RetryLoadLyricsAsync(key, title, artist);
+                ScheduleNotFoundRecovery(key, title, artist);
         }
         catch (Exception ex)
         {
@@ -312,155 +300,142 @@ public sealed class SmptcSessionService
         };
     }
 
-    /// <summary>
-    ///     "未找到歌词"的恢复策略（只针对 NotFound，可能是临时失败）：
-    ///     1. 1.2 秒后快速重试一次，并重新读取最新时长（切歌瞬间 EndTime 可能是上一首歌的旧值）；
-    ///     2. 仍 NotFound 才启动后台周期补抓（每 15 秒、最多 4 次），期间保持占位文本不闪烁；
-    ///        补抓返回 Loaded → 无缝换上歌词；返回 Instrumental → 确认真没歌词，切到"纯音乐"提示并停止。
-    ///     纯音乐（Instrumental）/已加载（Loaded）是确定性结果，绝不重试、绝不补抓。
-    /// </summary>
-    private async void RetryLoadLyricsAsync(string key, string title, string artist)
+    /// <summary>读取当前歌曲时长（搜索匹配辅助；切歌瞬间 EndTime 可能还是旧值）</summary>
+    private int? ReadDurationMs()
     {
-        if (_lyricsRetryPending)
-            return;
-        _lyricsRetryPending = true;
-
-        try
-        {
-            AppLog.Debug($"NotFound 延迟重试启动: {title} / {artist}");
-            await Task.Delay(1200);
-            if (key != _currentKey || _session is null)
-                return; // 已切到别的歌 / 会话关闭，放弃本次重试
-
-            var result = await LoadLyricsWithFreshDurationAsync(title, artist);
-            if (key != _currentKey)
-                return; // 等待期间又切歌，旧结果丢弃
-
-            AppLog.Debug($"NotFound 重试结果: {result}");
-            ApplyLyricsLoadResult(key, result);
-
-            // 只有"没找到"（可能是临时失败）才继续补抓；纯音乐/已加载是确定结果，不再打扰
-            if (result == LyricsLoadResult.NotFound)
-                StartBackgroundLyricsRefetch(key);
-        }
-        catch
-        {
-            // 重试失败保持现状（"未找到歌词"），由后台补抓兜底
-        }
-        finally
-        {
-            _lyricsRetryPending = false;
-        }
-    }
-
-    /// <summary>重新读取最新时长再加载歌词（切歌瞬间 EndTime 可能是上一首歌的旧值）</summary>
-    private async Task<LyricsLoadResult> LoadLyricsWithFreshDurationAsync(string title, string artist)
-    {
-        int? durationMs = null;
         try
         {
             var endTime = _session?.GetTimelineProperties().EndTime;
             if (endTime is { } t && t > TimeSpan.Zero)
-                durationMs = (int)t.TotalMilliseconds;
+                return (int)t.TotalMilliseconds;
         }
         catch
         {
             // 读不到时长就按不带时长搜索
         }
 
-        return await _lyrics.LoadAsync(title, artist, durationMs);
+        return null;
     }
 
-    /// <summary>应用一次歌词加载结果：重置切换状态并通知 UI（快速重试/后台补抓成功后都能无缝换上）</summary>
-    private void ApplyLyricsLoadResult(string key, LyricsLoadResult result)
+    /// <summary>统一歌词加载入口：用户选择记忆优先 → 多源自动匹配</summary>
+    private async Task<LyricsLoadResult> LoadLyricsOnceAsync(string title, string artist)
+    {
+        var key = $"{title}\u0001{artist}";
+        if (LyricsChoiceService.TryGet(key, out var choice))
+        {
+            AppLog.Debug($"使用用户选择的歌词候选: '{choice.Title}' / {choice.Artist}（来源={choice.SourceName}）");
+            var result = await _lyrics.LoadCandidateAsync(choice);
+            if (result != LyricsLoadResult.NotFound)
+                return result;
+            AppLog.Warn("记忆的歌词候选加载失败，退回自动匹配");
+        }
+
+        return await _lyrics.LoadAsync(title, artist, ReadDurationMs());
+    }
+
+    /// <summary>统一应用歌词加载结果：重置切换状态、通知 UI、设置状态文本。
+    /// showNotFound=false 时 NotFound 不显示（保留"正在获取歌词…"占位，等恢复调度确认）。</summary>
+    private void ApplyLoadResult(string key, LyricsLoadResult result, bool showNotFound = true)
     {
         _switchingTrack = false;
         _lastSwitchCompletedAt = Environment.TickCount;
         TrackLyricsChanged?.Invoke(key, result);
-        StatusChanged?.Invoke(StatusTextFor(result));
+        if (showNotFound || result != LyricsLoadResult.NotFound)
+            StatusChanged?.Invoke(StatusTextFor(result));
     }
 
-    /// <summary>启动"未找到歌词"后台补抓（仅 NotFound 时；切歌/断开会话自动停止）</summary>
-    private void StartBackgroundLyricsRefetch(string key)
+    /// <summary>启动"未找到歌词"恢复调度：1.2s 快速重试 → 仍失败接 15s×4 后台补抓；切歌/断开会话自动取消。</summary>
+    private void ScheduleNotFoundRecovery(string key, string title, string artist)
     {
-        if (_notFoundRefetchCts is not null)
-            return; // 已有补抓循环在跑
-
-        _notFoundRetryAttempt = 0;
+        CancelNotFoundRecovery();
         var cts = new CancellationTokenSource();
-        _notFoundRefetchCts = cts;
-        _ = BackgroundLyricsRefetchAsync(key, cts);
+        _recoveryCts = cts;
+        _ = RunNotFoundRecoveryAsync(key, title, artist, cts);
     }
 
     /// <summary>
-    ///     后台补抓循环：同一首歌内每 15 秒静默重试，最多 4 次。
-    ///     暂停/停止时跳过本轮（不消耗次数）；切歌、会话断开、已有歌词、确认真没歌词即停止。
+    ///     "未找到歌词"恢复循环（只针对 NotFound，可能是临时失败）：
+    ///     1.2s 快速重试（重新读最新时长）→ 仍失败接后台周期补抓（15s、最多 4 次）。
+    ///     返回 Loaded → 无缝换上歌词；返回 Instrumental → 确认真没歌词，切"纯音乐"提示并停止。
     /// </summary>
-    private async Task BackgroundLyricsRefetchAsync(string key, CancellationTokenSource cts)
+    private async Task RunNotFoundRecoveryAsync(string key, string title, string artist, CancellationTokenSource cts)
     {
         try
         {
             var token = cts.Token;
-            while (_notFoundRetryAttempt < NotFoundRefetchMaxAttempts)
+
+            // 1. 快速重试：1.2s 后重新加载（此刻 EndTime 旧值问题通常已过）
+            await Task.Delay(1200, token);
+            token.ThrowIfCancellationRequested();
+            if (key != _currentKey || _session is null)
+                return;
+
+            AppLog.Debug($"NotFound 快速重试: {title} / {artist}");
+            var quickResult = await LoadLyricsOnceAsync(title, artist);
+            if (key != _currentKey)
+                return;
+
+            if (quickResult != LyricsLoadResult.NotFound)
+            {
+                ApplyLoadResult(key, quickResult);
+                return; // 成功 / 纯音乐：恢复完成
+            }
+
+            // 2. 快速重试也失败：正式显示"未找到歌词"，并启动后台周期补抓
+            ApplyLoadResult(key, LyricsLoadResult.NotFound);
+            var attempt = 0;
+            while (attempt < NotFoundRefetchMaxAttempts)
             {
                 await Task.Delay(TimeSpan.FromSeconds(NotFoundRefetchIntervalSec), token);
                 token.ThrowIfCancellationRequested();
 
                 if (_session is null || key != _currentKey || _lyrics.Lines.Count > 0)
                     return; // 会话关闭 / 已切歌 / 歌词已就绪
-
                 if (!IsActuallyPlaying(_session))
                     continue; // 暂停/停止：跳过本轮，恢复播放后继续
 
-                try
-                {
-                    var props = await _session.TryGetMediaPropertiesAsync();
-                    var title = props.Title;
-                    var artist = props.Artist ?? string.Empty;
-                    if (string.IsNullOrWhiteSpace(title))
-                        continue; // 元数据仍没就绪，下一轮再试
+                var props = await _session.TryGetMediaPropertiesAsync();
+                var pTitle = props.Title;
+                var pArtist = props.Artist ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(pTitle))
+                    continue; // 元数据仍没就绪，下一轮再试
+                if ($"{pTitle}\u0001{pArtist}" != key)
+                    return; // 实际已切歌
 
-                    if ($"{title}\u0001{artist}" != key)
-                        return; // 实际已切歌（key 与记录不符）
-
-                    _notFoundRetryAttempt++;
-                    AppLog.Debug($"NotFound 后台补抓第 {_notFoundRetryAttempt} 次: {title} / {artist}");
-                    var result = await LoadLyricsWithFreshDurationAsync(title, artist);
-                    if (key != _currentKey)
-                        return;
-
-                    if (result == LyricsLoadResult.NotFound)
-                        continue; // 仍没找到，下一轮再试（到上限为止）
-
-                    // Loaded / Instrumental 都是确定结果：无缝换上
-                    // （纯音乐则从"未找到歌词"切到"无填词"提示，不再重复请求）
-                    AppLog.Info($"NotFound 后台补抓得到确定结果: {result}");
-                    ApplyLyricsLoadResult(key, result);
+                attempt++;
+                AppLog.Debug($"NotFound 后台补抓第 {attempt} 次: {pTitle} / {pArtist}");
+                var result = await LoadLyricsOnceAsync(pTitle, pArtist);
+                if (key != _currentKey)
                     return;
-                }
-                catch
-                {
-                    // 单轮失败继续下一轮
-                }
+                if (result == LyricsLoadResult.NotFound)
+                    continue; // 仍没找到，下一轮
+
+                AppLog.Info($"NotFound 后台补抓得到确定结果: {result}");
+                ApplyLoadResult(key, result);
+                return;
             }
         }
         catch (OperationCanceledException)
         {
             // 切歌/断开会话导致的正常取消
         }
+        catch (Exception ex)
+        {
+            AppLog.Error($"NotFound 恢复调度异常: {ex.Message}");
+        }
         finally
         {
             cts.Dispose();
-            if (ReferenceEquals(_notFoundRefetchCts, cts))
-                _notFoundRefetchCts = null;
+            if (ReferenceEquals(_recoveryCts, cts))
+                _recoveryCts = null;
         }
     }
 
-    /// <summary>取消后台补抓（切歌/会话变化时调用）</summary>
-    private void CancelNotFoundRefetch()
+    /// <summary>取消"未找到歌词"恢复调度（切歌/会话变化时调用）</summary>
+    private void CancelNotFoundRecovery()
     {
-        var cts = _notFoundRefetchCts;
-        _notFoundRefetchCts = null;
+        var cts = _recoveryCts;
+        _recoveryCts = null;
         try
         {
             cts?.Cancel();
@@ -469,6 +444,47 @@ public sealed class SmptcSessionService
         {
             // 已取消/已释放，忽略
         }
+    }
+
+    /// <summary>获取当前歌曲的歌词候选（托盘"歌词选择…"用）</summary>
+    public async Task<IReadOnlyList<LyricCandidate>> GetLyricCandidatesAsync()
+    {
+        var session = _session;
+        if (session is null || string.IsNullOrWhiteSpace(_currentTitle))
+            return [];
+
+        return await _lyrics.GetCandidatesAsync(_currentTitle, _currentArtist, ReadDurationMs());
+    }
+
+    /// <summary>应用用户选中的候选：取词 + 显示 + 记忆</summary>
+    public async Task<bool> ApplyLyricCandidateAsync(LyricCandidate candidate)
+    {
+        var key = $"{_currentTitle}\u0001{_currentArtist}";
+        // 取词需要网络请求（1~2 秒），先给歌词栏反馈，避免用户以为卡了
+        StatusChanged?.Invoke("正在应用所选歌词…");
+
+        var result = await _lyrics.LoadCandidateAsync(candidate);
+        if (result == LyricsLoadResult.NotFound)
+        {
+            AppLog.Warn($"候选无歌词: '{candidate.Title}'（来源={candidate.SourceName}）");
+            StatusChanged?.Invoke("所选歌词版本没有歌词，请换一个试试");
+            return false;
+        }
+
+        // 选中的是纯音乐版本：正常显示"纯音乐"占位，但**不记忆**——
+        // 否则误选纯音乐版会把"有歌词的歌"锁死成纯音乐，还得清缓存才能恢复。
+        if (result == LyricsLoadResult.Instrumental)
+        {
+            AppLog.Warn($"候选为纯音乐: '{candidate.Title}'（来源={candidate.SourceName}）");
+            ApplyLoadResult(key, result);
+            return true;
+        }
+
+        _currentKey = key; // 确认当前歌曲，避免后续 key 校验丢弃
+        LyricsChoiceService.Put(key, candidate); // 记忆选择
+        ApplyLoadResult(key, result);             // 复用：重置切换状态 + 通知 UI
+        AppLog.Info($"已应用用户选择的歌词: '{candidate.Title}' / {candidate.Artist}（{result}）");
+        return true;
     }
 
     private void OnMediaPropertiesChanged(GlobalSystemMediaTransportControlsSession sender, MediaPropertiesChangedEventArgs args)

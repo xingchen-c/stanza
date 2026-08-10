@@ -10,6 +10,7 @@ using System.Windows.Threading;
 using Windows.Media.Control;
 using FluentLyrics.Models;
 using FluentLyrics.Services;
+using FluentLyrics.Services.Lyrics;
 using FluentLyrics.Services.Taskbar;
 
 namespace FluentLyrics;
@@ -99,7 +100,12 @@ public partial class MainWindow
         _tray.ShowHideRequested += ToggleCardVisibility;
         _tray.SettingsRequested += OpenSettings;
         _tray.OpenLogDirectoryRequested += OpenLogDirectory;
-        _tray.ClearCacheRequested += _smtc.Lyrics.ClearCache;
+        _tray.ClearCacheRequested += () =>
+        {
+            _smtc.Lyrics.ClearCache();
+            LyricsChoiceService.Clear(); // 手动选择的记忆一并清掉
+        };
+        _tray.LyricsSelectionRequested += ShowLyricsPicker;
         _tray.AdjustPositionRequested += ToggleAdjustPosition;
         _tray.ResetPositionRequested += ResetManualOffset;
         _tray.ExitRequested += Close;
@@ -235,6 +241,15 @@ public partial class MainWindow
     private async void OnNextClick(object sender, RoutedEventArgs e)
     {
         await _smtc.TrySkipNextAsync();
+    }
+
+    /// <summary>托盘"歌词选择…"：拉取候选 → 用户选择 → 应用并记忆</summary>
+    private async void ShowLyricsPicker()
+    {
+        var candidates = await _smtc.GetLyricCandidatesAsync();
+        var window = new LyricsPickerWindow(candidates);
+        if (window.ShowDialog() == true && window.SelectedCandidate is { } candidate)
+            await _smtc.ApplyLyricCandidateAsync(candidate);
     }
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtr")]
@@ -818,6 +833,12 @@ public partial class MainWindow
         // 切歌前的位置，用它匹配新歌词会闪出错位行。快照时间早于切歌开始 → 先不渲染，等新快照。
         if (_smtc.LastSwitchStartUtcMs > 0 &&
             timeline.LastUpdatedTime.ToUnixTimeMilliseconds() < _smtc.LastSwitchStartUtcMs)
+            return;
+
+        // 切歌后位置毛刺：LastUpdatedTime 已更新但 Position 可能还没归零（残留上一首歌的值），
+        // 此时按旧位置渲染会让卡拉OK先滚一截再回退。切歌后 2s 内位置 >10s 视为毛刺，跳过本轮。
+        if (rawPositionMs > 10000 &&
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _smtc.LastSwitchStartUtcMs < 2000)
             return;
 
         // 切歌状态机（位置回退检测、误判恢复、看门狗）统一由服务管理

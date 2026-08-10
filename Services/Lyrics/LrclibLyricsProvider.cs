@@ -8,6 +8,8 @@ namespace FluentLyrics.Services.Lyrics;
 /// <summary>LRCLIB 歌词源（兜底）：搜索 → 按 ID 取 LRC → 解析成带时间轴的行</summary>
 public sealed class LrclibLyricsProvider : ILyricsProvider
 {
+    public string Key => "LRCLIB";
+
     public string Name => "LRCLIB";
 
     public async Task<LyricsResult> LoadAsync(string title, string artist, int? durationMs)

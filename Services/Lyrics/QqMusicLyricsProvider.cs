@@ -8,6 +8,11 @@ namespace FluentLyrics.Services.Lyrics;
 /// <summary>QQ 音乐歌词源：搜索 → 取 QRC → 解析成带时间轴的行</summary>
 public sealed class QqMusicLyricsProvider : ILyricsProvider
 {
+    /// <summary>自动匹配最多尝试的候选数：避免同名多版本时逐个取词拖太久</summary>
+    private const int MaxAutoAttempts = 4;
+
+    public string Key => "QQ";
+
     public string Name => "QQ 音乐";
 
     public async Task<LyricsResult> LoadAsync(string title, string artist, int? durationMs)
@@ -17,7 +22,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
 
         try
         {
-            // 1. 用歌曲信息在 QQ 音乐搜索，拿到歌曲 Id
+            // 1. 用歌曲信息在 QQ 音乐搜索，拿到候选列表
             var metadata = new TrackMetadata
             {
                 Title = title,
@@ -25,27 +30,163 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
                 DurationMs = durationMs
             };
 
-            var searchResult = await SearcherHelper.QQMusicSearcher.SearchForResult(metadata);
-            if (searchResult is not QQMusicSearchResult qq)
+            var results = await SearcherHelper.QQMusicSearcher.SearchForResults(metadata);
+            if (results is null || results.Count == 0)
                 return new LyricsResult(LyricsLoadResult.NotFound, []);
 
-            AppLog.Debug($"QQ 搜索命中: '{qq.Title}' / {string.Join(", ", qq.Artists)} / 专辑='{qq.Album}' / 时长={qq.DurationMs?.ToString() ?? "?"}ms / MatchType={qq.MatchType}");
+            // 2. 逐个尝试候选：跳过时长不匹配（旧时长误配）与无歌词（纯音乐）的版本，
+            //    直到找到带歌词的正确版本。全部无歌词 → 返回 Instrumental（确认真纯音乐）。
+            var sawInstrumental = false;
+            var attempts = 0;
+            // 按匹配度（Perfect 优先）排序，同级再按时长差近的优先：
+            // 同名多版本时长接近时，高匹配度的候选更可能是用户正在听的那个版本。
+            var ordered = results
+                .OfType<QQMusicSearchResult>()
+                .OrderByDescending(r => MatchTypeRank(r.MatchType))
+                .ThenBy(r => DurationDeltaMs(r, durationMs));
+            foreach (var qq in ordered)
+            {
+                if (++attempts > MaxAutoAttempts)
+                    break;
 
-            // 2. 用歌曲 Id 获取解密后的歌词文本
-            var response = await ProviderHelper.QQMusicApi.GetLyricsAsync(qq.Id);
+                AppLog.Debug($"QQ 候选尝试 {attempts}: '{qq.Title}' / {string.Join(", ", qq.Artists)} / 专辑='{qq.Album}' / 时长={qq.DurationMs?.ToString() ?? "?"}ms / MatchType={qq.MatchType}");
+
+                // 候选名比对（第一道防线，取词前）：候选的歌名与期望歌名完全无关
+                // （如"伴宅日记"的搜索结果里混入同歌手的"狼人杀狂想曲"）→ 直接跳过，省一次取词。
+                if (!TitlesRelated(qq.Title ?? title, title))
+                {
+                    AppLog.Debug($"候选歌名与当前歌曲不符，跳过: '{qq.Title}'");
+                    continue;
+                }
+
+                // 时长校验只用于低匹配度候选：SMTC 的 EndTime 本身可能报错
+                // （如"伴宅日记"实际 263s，SMTC 却报 210s，差 52s），高匹配度候选要信任匹配度直接尝试；
+                // 只有 Medium 及以下的低匹配度 + 时长差 >15s，才判定为误配（旧时长/同名其他歌）。
+                if (MatchTypeRank(qq.MatchType) < 3 &&
+                    durationMs is { } expected &&
+                    qq.DurationMs is { } actual &&
+                    Math.Abs(actual - expected) > 15000)
+                {
+                    AppLog.Debug($"候选时长不匹配，跳过: 期望={expected}ms 实际={actual}ms 歌曲='{qq.Title}'");
+                    continue;
+                }
+
+                var result = await LoadBySongIdAsync(qq.Id, qq.Title ?? title, title, artist);
+                if (result.Status == LyricsLoadResult.Loaded)
+                    return result; // 找到带歌词的版本
+
+                if (result.Status == LyricsLoadResult.Instrumental)
+                {
+                    sawInstrumental = true;
+                    AppLog.Debug($"候选 '{qq.Title}' 无歌词（纯音乐），试下一个版本");
+                    continue;
+                }
+
+                // NotFound（解析失败/接口抖动）：试下一个候选
+            }
+
+            return new LyricsResult(
+                sawInstrumental ? LyricsLoadResult.Instrumental : LyricsLoadResult.NotFound,
+                []);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error($"QQ 搜索/取词失败: {ex.Message}");
+            return new LyricsResult(LyricsLoadResult.NotFound, []);
+        }
+    }
+
+    /// <summary>匹配度排序权重：Perfect 最高，Unknown 最低</summary>
+    private static int MatchTypeRank(object? matchType)
+    {
+        return matchType?.ToString() switch
+        {
+            "Perfect" => 5,
+            "PrettyHigh" => 4,
+            "High" => 3,
+            "Medium" => 2,
+            "Low" => 1,
+            _ => 0
+        };
+    }
+
+    /// <summary>候选时长与期望时长的差值（毫秒）；缺时长按 0 处理（不参与排序区分）</summary>
+    private static int DurationDeltaMs(QQMusicSearchResult r, int? expected)
+    {
+        if (expected is null || r.DurationMs is not { } actual)
+            return 0;
+        return Math.Abs(actual - expected.Value);
+    }
+
+    /// <summary>搜索候选列表（手动选择歌词用）：返回 QQ 搜索的多条结果</summary>
+    public async Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(string title, string artist, int? durationMs)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+            return [];
+
+        try
+        {
+            var metadata = new TrackMetadata { Title = title, Artist = artist, DurationMs = durationMs };
+            var results = await SearcherHelper.QQMusicSearcher.SearchForResults(metadata);
+            return (results ?? [])
+                .OfType<QQMusicSearchResult>()
+                .Select(r => new LyricCandidate(
+                    Key,
+                    Name,
+                    r.Id,
+                    r.Title ?? title,
+                    r.Artists is { Length: > 0 } ? string.Join(", ", r.Artists) : artist,
+                    r.Album,
+                    r.DurationMs,
+                    r.MatchType?.ToString()))
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error($"QQ 搜索候选失败: {ex.Message}");
+            return [];
+        }
+    }
+
+    /// <summary>按用户选中的候选直接取歌词（跳过搜索匹配；用户明确选择的不做内容校验）</summary>
+    public Task<LyricsResult> LoadCandidateAsync(LyricCandidate candidate)
+    {
+        return LoadBySongIdAsync(candidate.Id, candidate.Title, null, null);
+    }
+
+    /// <summary>
+    ///     按歌曲 ID 获取并解析歌词（搜索命中/用户候选共用）。
+    ///     expectedTitle/expectedArtist 非空时做歌词元数据校验：歌词里标注的歌名/歌手与期望明显不符 → 串歌，返回 NotFound。
+    /// </summary>
+    private async Task<LyricsResult> LoadBySongIdAsync(string id, string titleForLog, string? expectedTitle, string? expectedArtist)
+    {
+        try
+        {
+            var response = await ProviderHelper.QQMusicApi.GetLyricsAsync(id);
             var rawLyrics = response?.Lyrics;
 
             // 搜到了歌但歌词内容为空：QQ 音乐对纯音乐就是这种表现，按纯音乐处理
             if (string.IsNullOrWhiteSpace(rawLyrics))
             {
-                AppLog.Debug($"歌词内容为空（歌曲 '{qq.Title}'），按纯音乐处理");
+                AppLog.Debug($"歌词内容为空（歌曲 '{titleForLog}'），按纯音乐处理");
                 return new LyricsResult(LyricsLoadResult.Instrumental, []);
             }
 
-            // 3. 解析成带时间轴的行：绝大多数是 Qrc，个别歌曲返回 Lrc，两种都试
-            var parsed = ParseTimedLines(rawLyrics);
+            // 解析成带时间轴的行：绝大多数是 Qrc，个别歌曲返回 Lrc，两种都试
+            var (parsed, metadata) = ParseTimedLines(rawLyrics);
 
-            // 4. 解析翻译（Trans 与正词同时间轴，按开始时间对齐挂到对应行）
+            // 歌词元数据校验：歌词文件里标注的歌名与正在播放的歌曲明显不符 → 串歌，跳过该候选。
+            // 只按歌名判断（歌手同名的其他歌也常见，如"伴宅日记"的搜索里混入同歌手"狼人杀狂想曲"）。
+            if (expectedTitle is not null &&
+                metadata is not null &&
+                !string.IsNullOrWhiteSpace(metadata.Title) &&
+                !TitlesRelated(metadata.Title, expectedTitle))
+            {
+                AppLog.Debug($"歌词元数据与当前歌曲不符，跳过: 歌词标注='{metadata.Title}' / '{metadata.Artist}'");
+                return new LyricsResult(LyricsLoadResult.NotFound, []);
+            }
+
+            // 解析翻译（Trans 与正词同时间轴，按开始时间对齐挂到对应行）
             var translationMap = BuildTranslationMap(response?.Trans);
             AppLog.Debug($"翻译原始长度: {response?.Trans?.Length ?? 0}，翻译行数: {translationMap.Count}");
             if (translationMap.Count > 0)
@@ -81,13 +222,13 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
         }
         catch (Exception ex)
         {
-            AppLog.Error($"QQ 搜索/取词失败: {ex.Message}");
+            AppLog.Error($"QQ 取词失败: {ex.Message}");
             return new LyricsResult(LyricsLoadResult.NotFound, []);
         }
     }
 
-    /// <summary>把歌词原文按 Qrc/Lrc 两种格式尝试解析，返回带时间轴的行（已按开始时间排序）；解析不出则返回空列表</summary>
-    private static List<LyricLine> ParseTimedLines(string rawLyrics)
+    /// <summary>把歌词原文按 Qrc/Lrc 两种格式尝试解析；返回带时间轴的行（已按开始时间排序）+ 歌词元数据；解析不出则返回空列表</summary>
+    private static (List<LyricLine> Lines, ITrackMetadata? Metadata) ParseTimedLines(string rawLyrics)
     {
         var parsed = new List<LyricLine>();
         foreach (var rawType in new[] { LyricsRawTypes.Qrc, LyricsRawTypes.Lrc })
@@ -105,14 +246,28 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
 
                 parsed.Sort((a, b) => a.StartTime.CompareTo(b.StartTime));
                 if (parsed.Count > 0)
-                    return parsed;
+                    return (parsed, data?.TrackMetadata);
             }
             catch
             {
                 // 该格式解析失败就试下一种
             }
 
-        return parsed;
+        return (parsed, null);
+    }
+
+    /// <summary>歌名相关性：一方包含另一方（忽略空白/大小写）即视为同一首；空视为不相关</summary>
+    private static bool TitlesRelated(string lyricsTitle, string expectedTitle)
+    {
+        var a = Normalize(lyricsTitle);
+        var b = Normalize(expectedTitle);
+        return a.Length > 0 && b.Length > 0 && (a.Contains(b) || b.Contains(a));
+    }
+
+    /// <summary>规范化：去空白、转小写，便于包含判断</summary>
+    private static string Normalize(string s)
+    {
+        return string.Concat(s.Where(ch => !char.IsWhiteSpace(ch))).ToLowerInvariant();
     }
 
     /// <summary>从 SyllableLineInfo 提取逐字时间戳；普通行（无逐字数据）返回 null</summary>

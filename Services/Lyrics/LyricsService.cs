@@ -122,6 +122,44 @@ public sealed class LyricsService
         AppLog.Info("歌词缓存已清除（内存 + 磁盘）");
     }
 
+    /// <summary>收集各源的搜索候选（手动选择歌词用）</summary>
+    public async Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(string title, string artist, int? durationMs)
+    {
+        var list = new List<LyricCandidate>();
+        foreach (var provider in _providers)
+            try
+            {
+                list.AddRange(await provider.GetCandidatesAsync(title, artist, durationMs));
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error($"候选获取失败 {provider.Name}", ex);
+            }
+
+        return list;
+    }
+
+    /// <summary>按用户选中的候选直接取词（跳过自动匹配），并更新当前歌词行缓存</summary>
+    public async Task<LyricsLoadResult> LoadCandidateAsync(LyricCandidate candidate)
+    {
+        var provider = _providers.FirstOrDefault(p => p.Key == candidate.SourceKey);
+        if (provider is null)
+            return LyricsLoadResult.NotFound;
+
+        try
+        {
+            var result = await provider.LoadCandidateAsync(candidate);
+            if (result.Status != LyricsLoadResult.NotFound)
+                _lines = result.Lines.ToList();
+            return result.Status;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error($"按候选取词失败 {provider.Name}", ex);
+            return LyricsLoadResult.NotFound;
+        }
+    }
+
     /// <summary>
     ///     按播放位置（毫秒）二分查找当前行索引。
     ///     还没到第一行时返回 0（提前显示第一行）；没有歌词时返回 -1。

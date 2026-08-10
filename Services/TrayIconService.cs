@@ -25,6 +25,7 @@ public sealed class TrayIconService : IDisposable
         menu.Items.Add("设置", null, (_, _) => SettingsRequested?.Invoke());
         menu.Items.Add("打开日志目录", null, (_, _) => OpenLogDirectoryRequested?.Invoke());
         menu.Items.Add("清除歌词缓存", null, (_, _) => ClearCacheRequested?.Invoke());
+        menu.Items.Add("歌词选择…", null, (_, _) => LyricsSelectionRequested?.Invoke());
         _adjustMenuItem = new ToolStripMenuItem("调整歌词位置…", null, (_, _) => AdjustPositionRequested?.Invoke());
         menu.Items.Add(_adjustMenuItem);
         menu.Items.Add("重置歌词位置", null, (_, _) => ResetPositionRequested?.Invoke());
@@ -55,6 +56,9 @@ public sealed class TrayIconService : IDisposable
 
     /// <summary>请求清除歌词缓存</summary>
     public event Action? ClearCacheRequested;
+
+    /// <summary>请求打开歌词候选选择（手动选歌词版本）</summary>
+    public event Action? LyricsSelectionRequested;
 
     /// <summary>请求进入/退出"调整歌词位置"模式</summary>
     public event Action? AdjustPositionRequested;
