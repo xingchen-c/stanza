@@ -22,4 +22,9 @@
         <Using Remove="System.Windows.Forms"/>
     </ItemGroup>
 
+    <!-- 单元测试项目可见内部成员（纯函数测试用） -->
+    <ItemGroup>
+        <InternalsVisibleTo Include="FluentLyrics.Tests"/>
+    </ItemGroup>
+
 </Project>

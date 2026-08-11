@@ -10,6 +10,21 @@ namespace FluentLyrics.Services;
 /// </summary>
 public static class AppLog
 {
+    /// <summary>日志级别：低于该级别的日志不写文件（调试器输出始终保留）</summary>
+#if DEBUG
+    public static LogLevel MinimumLevel { get; set; } = LogLevel.Debug;
+#else
+    public static LogLevel MinimumLevel { get; set; } = LogLevel.Info;
+#endif
+
+    public enum LogLevel
+    {
+        Debug,
+        Info,
+        Warn,
+        Error
+    }
+
     /// <summary>保留日志天数</summary>
     private const int KeepDays = 7;
 
@@ -62,9 +77,13 @@ public static class AppLog
 
     private static void Write(string level, string message)
     {
-        // 同时保留调试器输出，Rider/VS 里依然看得到
+        // 调试器输出始终保留，Rider/VS 里依然看得到
         // 全限定名：本类有静态方法 Debug，裸写 Debug 会被解析成方法组而不是 System.Diagnostics.Debug
         System.Diagnostics.Debug.WriteLine($"[FluentLyrics] {message}");
+
+        // 低于当前级别（如发行版默认 Info 时的 DEBUG）不落盘，避免高频调试日志拖累磁盘 IO
+        if (!ShouldWriteFile(level))
+            return;
 
         try
         {
@@ -95,6 +114,24 @@ public static class AppLog
         {
             // 日志写入失败绝不能影响主功能
         }
+    }
+
+    /// <summary>该级别是否达到 MinimumLevel（DEBUG &lt; INFO &lt; WARN &lt; ERROR）</summary>
+    private static bool ShouldWriteFile(string level)
+    {
+        return Rank(level) >= Rank(MinimumLevel.ToString());
+    }
+
+    private static int Rank(string level)
+    {
+        return level.ToUpperInvariant() switch
+        {
+            "DEBUG" => 0,
+            "INFO" => 1,
+            "WARN" => 2,
+            "ERROR" => 3,
+            _ => 1
+        };
     }
 
     private static long SafeFileLength(string path)

@@ -8,10 +8,20 @@ namespace FluentLyrics.Services.Lyrics;
 /// </summary>
 public sealed class LyricsService
 {
+    /// <summary>内存缓存上限：满时淘汰最久未用的（轻量 LRU，避免周期性全清导致命中率归零）</summary>
+    private const int MaxMemoryCacheEntries = 20;
+
     // 最近歌曲的歌词缓存：切回听过的歌秒出，不用重新走网络搜索
-    private readonly Dictionary<string, (LyricsLoadResult Status, List<LyricLine> Lines)> _cache = new();
+    private readonly Dictionary<string, CacheEntry> _cache = new();
     private readonly ILyricsProvider[] _providers;
     private List<LyricLine> _lines = new();
+
+    private sealed class CacheEntry
+    {
+        public LyricsLoadResult Status;
+        public List<LyricLine> Lines = [];
+        public long LastUsedUnixMs;
+    }
 
     /// <summary>默认歌词源：QQ 音乐优先，LRCLIB 兜底</summary>
     public LyricsService()
@@ -33,10 +43,11 @@ public sealed class LyricsService
     {
         _lines = [];
 
-        var cacheKey = $"{title}\u0001{artist}";
+        var cacheKey = TrackKey.Of(title, artist);
         if (_cache.TryGetValue(cacheKey, out var cached))
         {
             _lines = cached.Lines;
+            cached.LastUsedUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             AppLog.Debug($"歌词缓存命中: '{title}' / {artist}（{cached.Status}）");
             return cached.Status;
         }
@@ -45,9 +56,7 @@ public sealed class LyricsService
         if (LyricsCacheService.TryGet(cacheKey, out var diskStatus, out var diskLines))
         {
             _lines = diskLines;
-            if (_cache.Count >= 20)
-                _cache.Clear();
-            _cache[cacheKey] = (diskStatus, diskLines);
+            PutCache(cacheKey, diskStatus, diskLines);
             AppLog.Debug($"歌词磁盘缓存命中: '{title}' / {artist}（{diskStatus}）");
             return diskStatus;
         }
@@ -75,6 +84,12 @@ public sealed class LyricsService
                 if (completed != loadTask)
                 {
                     AppLog.Warn($"歌词源 {provider.Name} 超过 {remainingSec:F1}s 未返回，本轮放弃");
+                    // 超时后任务仍在后台跑（Lyricify API 不接受取消）：观察异常，避免 UnobservedTaskException
+                    _ = loadTask.ContinueWith(t =>
+                    {
+                        if (t.IsFaulted)
+                            AppLog.Warn($"歌词源 {provider.Name} 超时后异常: {t.Exception?.GetBaseException().Message}");
+                    }, TaskScheduler.Default);
                     break; // 该源超时：本轮不再等待后续源，交给上层重试/补抓
                 }
 
@@ -96,9 +111,7 @@ public sealed class LyricsService
             AppLog.Info($"歌词加载成功: 来源={provider.Name} 结果={result.Status} 行数={_lines.Count} 歌曲='{title}' / {artist}");
 
             // NotFound 不缓存（可能是网络抖动），Loaded/Instrumental 才缓存
-            if (_cache.Count >= 20)
-                _cache.Clear(); // 简单上限，防止无限增长
-            _cache[cacheKey] = (result.Status, _lines);
+            PutCache(cacheKey, result.Status, _lines);
             LyricsCacheService.Put(cacheKey, result.Status, _lines); // 持久化，重启不丢
 
             return result.Status;
@@ -106,6 +119,23 @@ public sealed class LyricsService
 
         AppLog.Warn($"所有歌词源均未找到歌词: '{title}' / {artist}");
         return LyricsLoadResult.NotFound;
+    }
+
+    /// <summary>写入内存缓存：满上限时淘汰最久未用的（比全清平滑）</summary>
+    private void PutCache(string key, LyricsLoadResult status, IReadOnlyList<LyricLine> lines)
+    {
+        if (_cache.Count >= MaxMemoryCacheEntries)
+        {
+            var staleKey = _cache.OrderBy(kv => kv.Value.LastUsedUnixMs).First().Key;
+            _cache.Remove(staleKey);
+        }
+
+        _cache[key] = new CacheEntry
+        {
+            Status = status,
+            Lines = lines.ToList(),
+            LastUsedUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        };
     }
 
     /// <summary>清空歌词</summary>
@@ -160,13 +190,14 @@ public sealed class LyricsService
         }
     }
 
+    public int GetLineIndexAt(int positionMs) => GetLineIndexAt(_lines, positionMs);
+
     /// <summary>
-    ///     按播放位置（毫秒）二分查找当前行索引。
+    ///     按播放位置（毫秒）二分查找当前行索引（纯函数，可单测）。
     ///     还没到第一行时返回 0（提前显示第一行）；没有歌词时返回 -1。
     /// </summary>
-    public int GetLineIndexAt(int positionMs)
+    internal static int GetLineIndexAt(IReadOnlyList<LyricLine> lines, int positionMs)
     {
-        var lines = _lines;
         if (lines.Count == 0 || positionMs < 0)
             return -1;
         if (positionMs < lines[0].StartTime)

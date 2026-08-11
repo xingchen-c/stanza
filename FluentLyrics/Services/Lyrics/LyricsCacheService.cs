@@ -33,10 +33,11 @@ public static class LyricsCacheService
                 return false;
             }
 
+            // 命中只更新内存中的 LRU 时间戳，不写盘：单曲循环/频繁切回时命中很频繁，
+            // 每次全量重写整个 JSON 是浪费；重启后淘汰顺序按"最后一次写入"而非"最后一次命中"，可接受。
             entry.LastUsedUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             status = entry.Status;
             lines = entry.Lines.Select(FromDto).ToList();
-            Save(); // 最近使用时间落盘：重启后 LRU 淘汰顺序不失真（命中频率低，写开销可忽略）
             return true;
         }
     }

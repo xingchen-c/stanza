@@ -164,6 +164,7 @@ public partial class MainWindow
     {
         _currentIndex = -1;
         _lastProgress = -1;
+        _wordBoundaryCache.Clear(); // 上一首歌的逐字宽度缓存作废（常驻工具防无界增长）
     }
 
     /// <summary>歌词加载完成：重置渲染状态，ticker 下一拍按位置渲染</summary>
@@ -802,7 +803,7 @@ public partial class MainWindow
         else if (_hoverShowing)
         {
             _hoverShowing = false;
-            HoverPanel.Visibility = Visibility.Collapsed;
+            ApplyHoverState(); // 统一恢复（含 LyricViewport 可见性），避免窗口隐藏后歌词卡在 Hidden
         }
 
         // 播放状态变化 → 立即刷新卡片显隐（PlaybackInfoChanged 事件之外的 100ms 兜底）
@@ -886,6 +887,7 @@ public partial class MainWindow
 
     protected override void OnClosed(EventArgs e)
     {
+        _smtc.Dispose(); // 退订 SMTC 事件、取消"未找到歌词"恢复调度
         _fullscreenTimer.Stop();
         _ticker.Stop();
         _tray.Dispose();

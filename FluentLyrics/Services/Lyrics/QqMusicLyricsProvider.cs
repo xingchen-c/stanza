@@ -71,7 +71,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
                     continue;
                 }
 
-                var result = await LoadBySongIdAsync(qq.Id, qq.Title ?? title, title, artist);
+                var result = await LoadBySongIdAsync(qq.Id, qq.Title ?? title);
                 if (result.Status == LyricsLoadResult.Loaded)
                     return result; // 找到带歌词的版本
 
@@ -96,8 +96,12 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
         }
     }
 
-    /// <summary>匹配度排序权重：Perfect 最高，Unknown 最低</summary>
-    private static int MatchTypeRank(object? matchType)
+    /// <summary>
+    ///     匹配度排序权重：Perfect 最高，Unknown 最低。
+    ///     按 Lyricify.Lyrics.Helper 0.2.0 的 CompareHelper.MatchType 枚举名匹配；
+    ///     升级库时若枚举改名，这里会静默落到 Unknown（0），需同步更新。
+    /// </summary>
+    internal static int MatchTypeRank(object? matchType)
     {
         return matchType?.ToString() switch
         {
@@ -111,7 +115,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
     }
 
     /// <summary>候选时长与期望时长的差值（毫秒）；缺时长按 0 处理（不参与排序区分）</summary>
-    private static int DurationDeltaMs(QQMusicSearchResult r, int? expected)
+    internal static int DurationDeltaMs(QQMusicSearchResult r, int? expected)
     {
         if (expected is null || r.DurationMs is not { } actual)
             return 0;
@@ -148,17 +152,14 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
         }
     }
 
-    /// <summary>按用户选中的候选直接取歌词（跳过搜索匹配；用户明确选择的不做内容校验）</summary>
+    /// <summary>按用户选中的候选直接取歌词（跳过搜索匹配）</summary>
     public Task<LyricsResult> LoadCandidateAsync(LyricCandidate candidate)
     {
-        return LoadBySongIdAsync(candidate.Id, candidate.Title, null, null);
+        return LoadBySongIdAsync(candidate.Id, candidate.Title);
     }
 
-    /// <summary>
-    ///     按歌曲 ID 获取并解析歌词（搜索命中/用户候选共用）。
-    ///     expectedTitle/expectedArtist 非空时做歌词元数据校验：歌词里标注的歌名/歌手与期望明显不符 → 串歌，返回 NotFound。
-    /// </summary>
-    private async Task<LyricsResult> LoadBySongIdAsync(string id, string titleForLog, string? expectedTitle, string? expectedArtist)
+    /// <summary>按歌曲 ID 获取并解析歌词（搜索命中/用户候选共用）</summary>
+    private async Task<LyricsResult> LoadBySongIdAsync(string id, string titleForLog)
     {
         try
         {
@@ -173,18 +174,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
             }
 
             // 解析成带时间轴的行：绝大多数是 Qrc，个别歌曲返回 Lrc，两种都试
-            var (parsed, metadata) = ParseTimedLines(rawLyrics);
-
-            // 歌词元数据校验：歌词文件里标注的歌名与正在播放的歌曲明显不符 → 串歌，跳过该候选。
-            // 只按歌名判断（歌手同名的其他歌也常见，如"伴宅日记"的搜索里混入同歌手"狼人杀狂想曲"）。
-            if (expectedTitle is not null &&
-                metadata is not null &&
-                !string.IsNullOrWhiteSpace(metadata.Title) &&
-                !TitlesRelated(metadata.Title, expectedTitle))
-            {
-                AppLog.Debug($"歌词元数据与当前歌曲不符，跳过: 歌词标注='{metadata.Title}' / '{metadata.Artist}'");
-                return new LyricsResult(LyricsLoadResult.NotFound, []);
-            }
+            var (parsed, _) = ParseTimedLines(rawLyrics);
 
             // 解析翻译（Trans 与正词同时间轴，按开始时间对齐挂到对应行）
             var translationMap = BuildTranslationMap(response?.Trans);
@@ -257,7 +247,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
     }
 
     /// <summary>歌名相关性：一方包含另一方（忽略空白/大小写）即视为同一首；空视为不相关</summary>
-    private static bool TitlesRelated(string lyricsTitle, string expectedTitle)
+    internal static bool TitlesRelated(string lyricsTitle, string expectedTitle)
     {
         var a = Normalize(lyricsTitle);
         var b = Normalize(expectedTitle);
@@ -265,7 +255,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
     }
 
     /// <summary>规范化：去空白、转小写，便于包含判断</summary>
-    private static string Normalize(string s)
+    internal static string Normalize(string s)
     {
         return string.Concat(s.Where(ch => !char.IsWhiteSpace(ch))).ToLowerInvariant();
     }
@@ -290,7 +280,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
     }
 
     /// <summary>原文是否带时间戳标记（[mm:ss] 等），用于区分"解析失败"与"纯音乐占位文案"</summary>
-    private static bool LooksLikeTimedLyrics(string rawLyrics)
+    internal static bool LooksLikeTimedLyrics(string rawLyrics)
     {
         foreach (var line in rawLyrics.Split('\n'))
         {
@@ -341,7 +331,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
     }
 
     /// <summary>解析翻译文本（可能是 QRC 逐字或 LRC 逐行，两种都试），返回"开始时间 → 翻译"映射</summary>
-    private static Dictionary<int, string> BuildTranslationMap(string? transRaw)
+    internal static Dictionary<int, string> BuildTranslationMap(string? transRaw)
     {
         var map = new Dictionary<int, string>();
         if (string.IsNullOrWhiteSpace(transRaw))
@@ -379,7 +369,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
     }
 
     /// <summary>按开始时间匹配翻译：先精确，再 ±300ms 内取最近</summary>
-    private static string? MatchByTime(int startTime, Dictionary<int, string> map)
+    internal static string? MatchByTime(int startTime, Dictionary<int, string> map)
     {
         if (map.TryGetValue(startTime, out var exact))
             return exact;

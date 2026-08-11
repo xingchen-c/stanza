@@ -13,7 +13,7 @@ namespace FluentLyrics.Services;
 ///     SMTC 会话驱动：管理媒体会话生命周期、歌词加载、切歌状态机、封面解码与播放控制。
 ///     与 UI 解耦：通过事件向外通知状态变化，MainWindow 只订阅事件做渲染。
 /// </summary>
-public sealed class SmptcSessionService
+public sealed class SmptcSessionService : IDisposable
 {
     private readonly LyricsService _lyrics = new();
     private readonly Dispatcher _dispatcher;
@@ -90,8 +90,7 @@ public sealed class SmptcSessionService
         try
         {
             _sessionManager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-            _sessionManager.CurrentSessionChanged += (_, _) =>
-                _dispatcher.BeginInvoke(() => UpdateSession(_sessionManager.GetCurrentSession()));
+            _sessionManager.CurrentSessionChanged += OnCurrentSessionChanged;
             var hasSession = _sessionManager.GetCurrentSession() is not null;
             AppLog.Info($"SMTC 初始化成功（当前会话: {(hasSession ? "有" : "无")}）");
             UpdateSession(_sessionManager.GetCurrentSession());
@@ -101,6 +100,29 @@ public sealed class SmptcSessionService
             AppLog.Error($"SMTC 初始化失败: {ex.Message}");
             StatusChanged?.Invoke($"SMTC 初始化失败：{ex.Message}");
         }
+    }
+
+    private void OnCurrentSessionChanged(GlobalSystemMediaTransportControlsSessionManager sender, CurrentSessionChangedEventArgs args)
+    {
+        _dispatcher.BeginInvoke(() => UpdateSession(_sessionManager?.GetCurrentSession()));
+    }
+
+    /// <summary>释放：退订 SMTC 事件、取消"未找到歌词"恢复调度（应用退出时调用）</summary>
+    public void Dispose()
+    {
+        CancelNotFoundRecovery();
+
+        if (_sessionManager is not null)
+            _sessionManager.CurrentSessionChanged -= OnCurrentSessionChanged;
+        if (_session is not null)
+        {
+            _session.MediaPropertiesChanged -= OnMediaPropertiesChanged;
+            _session.TimelinePropertiesChanged -= OnTimelinePropertiesChanged;
+            _session.PlaybackInfoChanged -= OnPlaybackInfoChanged;
+        }
+
+        _sessionManager = null;
+        _session = null;
     }
 
     /// <summary>是否处于"正在播放"（含切歌中的 Changing）；查询失败按播放处理，走原有等待逻辑</summary>
@@ -210,7 +232,7 @@ public sealed class SmptcSessionService
             if (!IsActuallyPlaying(session))
             {
                 _switchingTrack = false;
-                var idleKey = string.IsNullOrWhiteSpace(title) ? string.Empty : $"{title}\u0001{artist}";
+                var idleKey = string.IsNullOrWhiteSpace(title) ? string.Empty : TrackKey.Of(title, artist);
                 _ = RefreshCoverAsync(props, idleKey);
                 if (_lyrics.Lines.Count == 0)
                     StatusChanged?.Invoke(string.IsNullOrWhiteSpace(title)
@@ -230,7 +252,7 @@ public sealed class SmptcSessionService
                 return;
             }
 
-            var key = $"{title}\u0001{artist}";
+            var key = TrackKey.Of(title, artist);
             _ = RefreshCoverAsync(props, key); // 切歌换封面；key 未变时内部直接跳过
             if (key == _currentKey)
                 return;
@@ -320,7 +342,7 @@ public sealed class SmptcSessionService
     /// <summary>统一歌词加载入口：用户选择记忆优先 → 多源自动匹配</summary>
     private async Task<LyricsLoadResult> LoadLyricsOnceAsync(string title, string artist)
     {
-        var key = $"{title}\u0001{artist}";
+        var key = TrackKey.Of(title, artist);
         if (LyricsChoiceService.TryGet(key, out var choice))
         {
             AppLog.Debug($"使用用户选择的歌词候选: '{choice.Title}' / {choice.Artist}（来源={choice.SourceName}）");
@@ -399,7 +421,7 @@ public sealed class SmptcSessionService
                 var pArtist = props.Artist ?? string.Empty;
                 if (string.IsNullOrWhiteSpace(pTitle))
                     continue; // 元数据仍没就绪，下一轮再试
-                if ($"{pTitle}\u0001{pArtist}" != key)
+                if (TrackKey.Of(pTitle, pArtist) != key)
                     return; // 实际已切歌
 
                 attempt++;
@@ -459,7 +481,7 @@ public sealed class SmptcSessionService
     /// <summary>应用用户选中的候选：取词 + 显示 + 记忆</summary>
     public async Task<bool> ApplyLyricCandidateAsync(LyricCandidate candidate)
     {
-        var key = $"{_currentTitle}\u0001{_currentArtist}";
+        var key = TrackKey.Of(_currentTitle, _currentArtist);
         // 取词需要网络请求（1~2 秒），先给歌词栏反馈，避免用户以为卡了
         StatusChanged?.Invoke("正在应用所选歌词…");
 
@@ -658,7 +680,7 @@ public sealed class SmptcSessionService
                 {
                     var props = await _session.TryGetMediaPropertiesAsync();
                     if (!string.IsNullOrWhiteSpace(props.Title))
-                        currentKey = $"{props.Title}\u0001{props.Artist ?? string.Empty}";
+                        currentKey = TrackKey.Of(props.Title, props.Artist);
                 }
                 catch
                 {
