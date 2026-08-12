@@ -28,6 +28,7 @@ public partial class MainWindow
     private const uint SwpNosize = 0x0001;
     private const uint SwpNoactivate = 0x0010;
     private const double MarqueeEndPadding = 24; // 滚到最右侧时预留的空白
+    private const int PauseSeekThresholdMs = 2000; // 暂停中位置大跳变（拖动进度条）才接受；QQ 迟到的最终位置忽略
     private static readonly IntPtr HwndTopmost = new(-1);
     private static readonly string[] ShellWindowClasses = ["Shell_TrayWnd", "Shell_SecondaryTrayWnd", "Progman", "WorkerW"];
     private readonly TaskbarService _taskbar = new();
@@ -48,6 +49,10 @@ public partial class MainWindow
     private HwndSource? _hwndSource; // 窗口消息钩子（WM_NCHITTEST 区域点击穿透）
     private int _lastFullscreenDiagTick = -5000; // 全屏检测诊断日志节流
     private double _lastClipWidth = -1; // 上次裁剪宽度（逐字/线性共用去重）
+    private double _animatedClipWidth = -1; // 卡拉OK亮色边界当前显示宽度（平滑趋近目标，渐入渐出）
+    private long _lastPlayingSnapshotUtcMs; // 最后一次播放中的快照时刻（暂停动量：判断是否有更新的暂停快照）
+    private int _lastPlayingPositionMs = -1; // 最后一次播放中的外推位置（暂停时对齐实际停止点）
+    private int _pausedDisplayPositionMs = -1; // 暂停时冻结的显示位置（-1 = 播放中/未暂停）
     private double _lastProgress = -1; // 上次渲染的进度（0~1）
     private Brush _lyricBrush = Brushes.White; // 状态文本/亮色层画刷
     private Color _lyricColor = Colors.White;
@@ -139,6 +144,10 @@ public partial class MainWindow
     {
         _currentIndex = -1;
         _lastProgress = -1;
+        _animatedClipWidth = -1;
+        _lastPlayingPositionMs = -1;
+        _pausedDisplayPositionMs = -1;
+        _lastPlayingSnapshotUtcMs = 0;
         CoverImage.Source = null;
         CoverBorder.Visibility = Visibility.Collapsed;
         LyricViewport.Visibility = Visibility.Visible;
@@ -156,6 +165,7 @@ public partial class MainWindow
     {
         _currentIndex = -1;
         _lastProgress = -1;
+        _animatedClipWidth = -1;
         UpdateLyricDisplay(text);
     }
 
@@ -164,6 +174,10 @@ public partial class MainWindow
     {
         _currentIndex = -1;
         _lastProgress = -1;
+        _animatedClipWidth = -1;
+        _lastPlayingPositionMs = -1;
+        _pausedDisplayPositionMs = -1;
+        _lastPlayingSnapshotUtcMs = 0;
         _wordBoundaryCache.Clear(); // 上一首歌的逐字宽度缓存作废（常驻工具防无界增长）
     }
 
@@ -172,6 +186,7 @@ public partial class MainWindow
     {
         _currentIndex = -1;
         _lastProgress = -1;
+        _animatedClipWidth = -1;
     }
 
     /// <summary>播放状态变化：刷新播放/暂停图标与卡片显隐</summary>
@@ -591,6 +606,7 @@ public partial class MainWindow
         _clickThrough = false;
         _currentIndex = -1;
         _lastProgress = -1;
+        _animatedClipWidth = -1;
         ApplyWindowStyles();
         _tray.SetAdjusting(true);
         SetStatus("拖动卡片调整位置，右键完成");
@@ -631,6 +647,7 @@ public partial class MainWindow
         _tray.SetAdjusting(false);
         _currentIndex = -1;
         _lastProgress = -1;
+        _animatedClipWidth = -1;
         SetStatus(string.Empty); // 清掉调整提示，下一拍 ticker 会重绘当前行
         AppLog.Info("退出位置调整模式");
         PositionCard(); // 恢复锚点+偏移定位
@@ -716,6 +733,7 @@ public partial class MainWindow
         ApplyLyricBrushes();
         _wordBoundaryCache.Clear(); // 字号可能变化，逐字宽度缓存作废
         _lastClipWidth = -1;
+        _animatedClipWidth = -1;
         LyricTextBright.FontSize = _settings.FontSize;
         LyricTextDim.FontSize = _settings.FontSize;
         LyricTranslation.FontSize = Math.Max(10, _settings.FontSize - 3);

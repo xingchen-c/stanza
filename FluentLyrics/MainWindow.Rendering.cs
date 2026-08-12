@@ -30,6 +30,7 @@ public partial class MainWindow
         _lastProgress = -1;
         LyricTextBright.Clip = null; // 清掉上一行的裁剪，避免行时长缺失时残留旧边界
         _lastClipWidth = -1;
+        _animatedClipWidth = -1; // 新行从当前进度直接点亮，不做跨行滑动
         ReapplyLyricDisplay(); // 先完成布局，UpdateLyricProgress 需要文本实际宽度
         UpdateLyricProgress(positionMs);
     }
@@ -61,10 +62,10 @@ public partial class MainWindow
         if (width <= 0)
             return;
 
-        double clipWidth;
+        double targetClipWidth;
         if (line.HasWordTiming && TryGetWordClipWidth(line, positionMs, out var wordClip))
         {
-            clipWidth = wordClip; // 逐字：按演唱节奏点亮
+            targetClipWidth = wordClip; // 逐字：按演唱节奏点亮
         }
         else
         {
@@ -76,19 +77,32 @@ public partial class MainWindow
             if (Math.Abs(progress - _lastProgress) < 0.002)
                 return;
             _lastProgress = progress;
-            clipWidth = width * progress; // 兜底：整行线性揭晓
+            targetClipWidth = width * progress; // 兜底：整行线性揭晓
         }
 
-        if (Math.Abs(clipWidth - _lastClipWidth) < 0.5)
+        // 渐入渐出：亮色边界平滑趋近目标——正常逐字推进几乎无感，
+        // 暂停/恢复/拖动进度条带来的大跳变在 ~300ms 内滑过去而不是硬切。
+        if (_animatedClipWidth < 0)
+        {
+            _animatedClipWidth = targetClipWidth;
+        }
+        else
+        {
+            _animatedClipWidth += (targetClipWidth - _animatedClipWidth) * 0.55;
+            if (Math.Abs(_animatedClipWidth - targetClipWidth) < 0.5)
+                _animatedClipWidth = targetClipWidth;
+        }
+
+        if (Math.Abs(_animatedClipWidth - _lastClipWidth) < 0.5)
             return;
-        _lastClipWidth = clipWidth;
+        _lastClipWidth = _animatedClipWidth;
 
         // 亮色层只露出 0..clipWidth 部分：一条干净竖直边界扫过整行，不受字形段拆分影响
         LyricTextBright.Clip = new RectangleGeometry(
-            new Rect(0, 0, clipWidth, LyricTextBright.ActualHeight));
+            new Rect(0, 0, _animatedClipWidth, LyricTextBright.ActualHeight));
 
         // 长歌词跟随演唱进度滚动：亮色边界（正在唱的位置）始终保持在视口内
-        UpdateLyricScroll(clipWidth);
+        UpdateLyricScroll(_animatedClipWidth);
     }
 
     /// <summary>
@@ -241,12 +255,64 @@ public partial class MainWindow
         GlobalSystemMediaTransportControlsSession session)
     {
         var position = timeline.Position;
+        var snapshotUtcMs = timeline.LastUpdatedTime.ToUnixTimeMilliseconds();
 
-        // 仅在播放中做外推；暂停/停止时直接用上报的位置
         if (session.GetPlaybackInfo().PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
         {
+            _pausedDisplayPositionMs = -1; // 恢复播放：解除暂停冻结
             var elapsed = DateTimeOffset.Now - timeline.LastUpdatedTime;
-            if (elapsed > TimeSpan.Zero && elapsed < TimeSpan.FromSeconds(2)) position += elapsed;
+            // 外推只在快照足够新且不早于"最近一次恢复播放"时进行：
+            // 暂停/停止期间 LastUpdatedTime 停更，恢复瞬间用旧快照外推会把暂停时长当播放时长，
+            // 导致卡拉OK线先假跳、再被新快照拉回（来回跳两下）。
+            if (elapsed > TimeSpan.Zero && elapsed < TimeSpan.FromSeconds(2) && snapshotUtcMs >= _smtc.ResumeBoundaryUtcMs)
+            {
+                position += elapsed;
+            }
+            else if (snapshotUtcMs < _smtc.ResumeBoundaryUtcMs && _lastPlayingPositionMs >= 0)
+            {
+                // 恢复瞬间还在用暂停前的旧快照：从"暂停时估算的实际停止点"继续推进，
+                // 把 QQ 那种"暂停时往前跳一下"留在暂停时刻，而不是恢复后硬跳一截。
+                var sinceResumeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _smtc.ResumeBoundaryUtcMs;
+                if (sinceResumeMs > 0)
+                    position = TimeSpan.FromMilliseconds(_lastPlayingPositionMs + sinceResumeMs);
+            }
+            _lastPlayingSnapshotUtcMs = snapshotUtcMs;
+            _lastPlayingPositionMs = (int)position.TotalMilliseconds;
+        }
+        else
+        {
+            // 暂停/停止：暂停瞬间立即对齐到最后外推位置（≈音频实际停止点，完成"往前跳一下"），
+            // 之后冻结显示——QQ 迟到的"最终位置"快照不再触发第二次跳变（否则会有
+            // "停住 → 过一会 → 再往前走一段"的诡异感）；只接受明显的拖动进度条（大跳变）。
+            if (_pausedDisplayPositionMs < 0)
+            {
+                // 暂停瞬间：若 QQ 已推送最终位置快照（快照比最后播放时更新）则直接用它，
+                // 否则用最后外推位置（≈实际停止点）——两者都不会造成"停住→再跳"的二次跳变。
+                var finalPositionArrived = snapshotUtcMs > _lastPlayingSnapshotUtcMs;
+                _pausedDisplayPositionMs = finalPositionArrived
+                    ? (int)timeline.Position.TotalMilliseconds
+                    : _lastPlayingPositionMs >= 0
+                        ? _lastPlayingPositionMs
+                        : (int)timeline.Position.TotalMilliseconds;
+                _lastPlayingSnapshotUtcMs = snapshotUtcMs;
+                position = TimeSpan.FromMilliseconds(_pausedDisplayPositionMs);
+            }
+            else if (snapshotUtcMs > _lastPlayingSnapshotUtcMs)
+            {
+                var seekDelta = Math.Abs((int)timeline.Position.TotalMilliseconds - _pausedDisplayPositionMs);
+                if (seekDelta > PauseSeekThresholdMs)
+                {
+                    // 暂停中拖动进度条：接受新位置（恢复播放时从这里继续）
+                    _pausedDisplayPositionMs = (int)timeline.Position.TotalMilliseconds;
+                    _lastPlayingPositionMs = _pausedDisplayPositionMs;
+                    _lastPlayingSnapshotUtcMs = snapshotUtcMs;
+                }
+                position = TimeSpan.FromMilliseconds(_pausedDisplayPositionMs);
+            }
+            else
+            {
+                position = TimeSpan.FromMilliseconds(_pausedDisplayPositionMs);
+            }
         }
 
         // 全局歌词偏移：正数 = 歌词提前显示
@@ -272,6 +338,7 @@ public partial class MainWindow
         LyricTextBright.Foreground = _lyricBrush;
         LyricTextBright.Clip = null;
         _lastClipWidth = -1;
+        _animatedClipWidth = -1;
         LyricTranslation.Text = string.Empty;
         LyricTranslation.Visibility = Visibility.Collapsed;
         ReapplyLyricDisplay();
