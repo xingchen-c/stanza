@@ -78,10 +78,23 @@ public partial class SettingsWindow
                 CompatibilityCombo.SelectedItem = item;
                 break;
             }
+
+        foreach (ComboBoxItem item in AnimationCombo.Items)
+            if (item.Tag?.ToString() == settings.AnimationSpeed)
+            {
+                AnimationCombo.SelectedItem = item;
+                break;
+            }
+
+        // 初始值填充完成后再接预览事件，避免初始化时误触发
+        WirePreviewEvents();
     }
 
     /// <summary>保存成功后触发（主窗口据此重新应用设置）</summary>
     public event Action? Saved;
+
+    /// <summary>任一设置项变化时触发（主窗口据此实时预览，不落盘）</summary>
+    public event Action<AppSettings>? PreviewChanged;
 
     private void AutoWidth_Changed(object sender, RoutedEventArgs e)
     {
@@ -90,21 +103,37 @@ public partial class SettingsWindow
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
-        // 白名单至少勾选一项：全不勾会导致定位没有依据，禁止保存
-        var whitelist = new List<string>();
-        if (FluentFlyoutCheck.IsChecked == true)
-            whitelist.Add("FluentFlyout");
-        if (IndependentCheck.IsChecked == true)
-            whitelist.Add("Independent");
+        var settings = BuildSettings();
 
-        if (whitelist.Count == 0)
+        // 白名单至少勾选一项：全不勾会导致定位没有依据，禁止保存
+        if (settings.TaskbarLocatorWhitelist.Count == 0)
         {
             MessageBox.Show(this, "至少勾选一种任务栏定位方式。", "FluentLyrics",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        var settings = new AppSettings
+        AppSettingsService.Save(settings);
+        AppSettingsService.ApplyAutoStart(settings.AutoStart);
+        Saved?.Invoke();
+        Close();
+    }
+
+    private void Cancel_Click(object sender, RoutedEventArgs e)
+    {
+        Close();
+    }
+
+    /// <summary>从当前控件状态构造 AppSettings（保存与实时预览共用）</summary>
+    private AppSettings BuildSettings()
+    {
+        var whitelist = new List<string>();
+        if (FluentFlyoutCheck.IsChecked == true)
+            whitelist.Add("FluentFlyout");
+        if (IndependentCheck.IsChecked == true)
+            whitelist.Add("Independent");
+
+        return new AppSettings
         {
             FontSize = FontSizeSlider.Value,
             LyricColor = (ColorCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "#FFFFFFFF",
@@ -119,18 +148,45 @@ public partial class SettingsWindow
             ManualOffsetY = _baseSettings.ManualOffsetY,
             AutoCardWidth = AutoWidthCheck.IsChecked == true,
             CardWidth = WidthSlider.Value,
-            CompatibilityMode = (CompatibilityCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Auto"
+            CompatibilityMode = (CompatibilityCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Auto",
+            AnimationSpeed = (AnimationCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Normal"
         };
-
-        AppSettingsService.Save(settings);
-        AppSettingsService.ApplyAutoStart(settings.AutoStart);
-        Saved?.Invoke();
-        Close();
     }
 
-    private void Cancel_Click(object sender, RoutedEventArgs e)
+    /// <summary>任一设置项变化时触发预览（白名单为空属于无效状态，跳过）</summary>
+    private void OnPreviewChanged()
     {
-        Close();
+        var settings = BuildSettings();
+        if (settings.TaskbarLocatorWhitelist.Count == 0)
+            return;
+        PreviewChanged?.Invoke(settings);
+    }
+
+    /// <summary>为所有设置控件接上预览事件（在初始值填充完成后调用）</summary>
+    private void WirePreviewEvents()
+    {
+        FontSizeSlider.ValueChanged += (_, _) => OnPreviewChanged();
+        OffsetSlider.ValueChanged += (_, _) => OnPreviewChanged();
+        WidthSlider.ValueChanged += (_, _) => OnPreviewChanged();
+
+        ColorCombo.SelectionChanged += (_, _) => OnPreviewChanged();
+        DirectionCombo.SelectionChanged += (_, _) => OnPreviewChanged();
+        CompatibilityCombo.SelectionChanged += (_, _) => OnPreviewChanged();
+        AnimationCombo.SelectionChanged += (_, _) => OnPreviewChanged();
+
+        WireTogglePreview(ClickThroughCheck);
+        WireTogglePreview(MediaControlsCheck);
+        WireTogglePreview(HideOnPauseCheck);
+        WireTogglePreview(AutoStartCheck);
+        WireTogglePreview(FluentFlyoutCheck);
+        WireTogglePreview(IndependentCheck);
+        WireTogglePreview(AutoWidthCheck);
+    }
+
+    private void WireTogglePreview(ToggleButton toggle)
+    {
+        toggle.Checked += (_, _) => OnPreviewChanged();
+        toggle.Unchecked += (_, _) => OnPreviewChanged();
     }
 
     /// <summary>标题栏拖动窗口（try-catch：非主键按下时 DragMove 会抛）</summary>

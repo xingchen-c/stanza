@@ -253,17 +253,15 @@ public partial class MainWindow
             HoverPanel.Margin = new Thickness(coverRight + 8, 0, 0, 0);
             // 隐藏歌词（保留布局与滚动位置），显示歌手信息 + 控制按钮
             LyricViewport.Visibility = Visibility.Hidden;
-            HoverPanel.Visibility = Visibility.Visible;
+            AnimateVisibility(HoverPanel, true);
             // 强制同步布局：否则从隐藏切到显示的瞬间 ActualWidth 仍为 0，
             // WM_NCHITTEST 会跳过面板判定、按钮区域返回穿透（悬停/点击偶发无反馈）
             HoverPanel.UpdateLayout();
         }
         else
         {
-            HoverPanel.HorizontalAlignment = HorizontalAlignment.Right;
-            HoverPanel.Margin = new Thickness(0, 0, 6, 0);
             LyricViewport.Visibility = Visibility.Visible;
-            HoverPanel.Visibility = Visibility.Collapsed;
+            AnimateVisibility(HoverPanel, false);
         }
     }
 
@@ -665,13 +663,28 @@ public partial class MainWindow
     {
         // 不设 Owner：主窗口是置顶的，附属窗口会跟着进置顶层；设置窗口应是普通窗口。
         // ShowDialog 保持模态，居中改为屏幕中心（主窗口在任务栏，相对它居中会偏出屏幕）。
+        var savedSettings = _settings; // 进入设置前状态，取消时回滚
+        var saved = false;
         var window = new SettingsWindow(_settings);
+        window.PreviewChanged += preview =>
+        {
+            _settings = preview;
+            ApplySettings(); // 实时预览，不落盘
+        };
         window.Saved += () =>
         {
+            saved = true;
             _settings = AppSettingsService.Load();
             ApplySettings();
         };
         window.ShowDialog();
+
+        // 取消 / 直接关闭：回滚到进入设置前的状态
+        if (!saved)
+        {
+            _settings = savedSettings;
+            ApplySettings();
+        }
     }
 
     /// <summary>托盘菜单：用资源管理器打开日志目录，方便反馈问题时直接拷日志</summary>

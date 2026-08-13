@@ -653,6 +653,23 @@
                                 <ComboBoxItem Content="禁用降级" Tag="ForceOff" />
                             </ComboBox>
                         </Grid>
+
+                        <Grid MinHeight="54" Margin="16,8,16,4">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="动画" FontSize="14" Foreground="{StaticResource TextPrimaryBrush}" />
+                                <TextBlock Text="翻译行与悬停面板的渐入渐出速度" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" />
+                            </StackPanel>
+                            <ComboBox Grid.Row="1" x:Name="AnimationCombo" Style="{StaticResource FluentComboBox}" Margin="0,6,0,0">
+                                <ComboBoxItem Content="标准" Tag="Normal" IsSelected="True" />
+                                <ComboBoxItem Content="快" Tag="Fast" />
+                                <ComboBoxItem Content="慢" Tag="Slow" />
+                                <ComboBoxItem Content="关闭" Tag="Off" />
+                            </ComboBox>
+                        </Grid>
                     </StackPanel>
                 </Border>
             </StackPanel>

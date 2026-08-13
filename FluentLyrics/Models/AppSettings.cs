@@ -55,4 +55,10 @@ public sealed class AppSettings
     ///     Auto = 检测到软件渲染（RenderCapability.Tier=0）时自动降级；ForceOn = 强制降级；ForceOff = 禁用降级。
     /// </summary>
     public string CompatibilityMode { get; set; } = "Auto";
+
+    /// <summary>
+    ///     动画速度（翻译行 / 悬停面板渐入渐出）：
+    ///     Off = 关闭（瞬时切换）；Fast / Normal / Slow = 快 / 标准 / 慢。
+    /// </summary>
+    public string AnimationSpeed { get; set; } = "Normal";
 }

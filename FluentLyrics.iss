@@ -22,7 +22,8 @@ PrivilegesRequired=lowest
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务："
 
 [Files]
-; 自包含发布目录（dotnet publish FluentLyrics\FluentLyrics.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o dist\FluentLyrics-0.2.0-win-x64）
+; 自包含发布目录（在解决方案根目录执行）：
+;   dotnet publish FluentLyrics\FluentLyrics.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ..\dist\FluentLyrics-0.2.0-win-x64
 Source: "..\dist\FluentLyrics-0.2.0-win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]

@@ -12,6 +12,59 @@ namespace FluentLyrics;
 /// <summary>歌词渲染：卡拉OK逐字、跟随式滚动、翻译与布局（MainWindow 分部）</summary>
 public partial class MainWindow
 {
+    private bool _translationShown; // 翻译行当前是否显示（用于只在状态切换时做淡入淡出）
+
+    /// <summary>
+    ///     元素渐入/渐出：渐入先显示再淡入；渐出淡出后折叠并恢复透明度。
+    ///     BeginAnimation(null) 取消在途动画不会触发其 Completed，重复调用不会竞态。
+    /// </summary>
+    private static void FadeElement(FrameworkElement element, bool show, double durationMs)
+    {
+        element.BeginAnimation(UIElement.OpacityProperty, null);
+
+        if (show)
+        {
+            element.Visibility = Visibility.Visible;
+            element.Opacity = 0;
+            element.BeginAnimation(UIElement.OpacityProperty,
+                new DoubleAnimation(1, TimeSpan.FromMilliseconds(durationMs)));
+            return;
+        }
+
+        if (element.Visibility != Visibility.Visible)
+            return;
+
+        element.Opacity = 1; // 确保从可见状态淡出（此前淡入可能把 base 值留在 0）
+        var fadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(durationMs));
+        fadeOut.Completed += (_, _) =>
+        {
+            element.BeginAnimation(UIElement.OpacityProperty, null);
+            element.Opacity = 1;
+            element.Visibility = Visibility.Collapsed;
+        };
+        element.BeginAnimation(UIElement.OpacityProperty, fadeOut);
+    }
+
+    /// <summary>按设置里的动画速度做渐入渐出；关闭时瞬时切换。</summary>
+    private void AnimateVisibility(FrameworkElement element, bool show)
+    {
+        if (string.Equals(_settings.AnimationSpeed, "Off", StringComparison.OrdinalIgnoreCase))
+        {
+            element.BeginAnimation(UIElement.OpacityProperty, null);
+            element.Opacity = 1;
+            element.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            return;
+        }
+
+        var durationMs = _settings.AnimationSpeed switch
+        {
+            "Fast" => 80,
+            "Slow" => 250,
+            _ => 150
+        };
+        FadeElement(element, show, durationMs);
+    }
+
     /// <summary>渲染当前歌词行：暗色全文垫底，亮色层用 Clip 按进度从左揭开</summary>
     private void ShowLyricLine(LyricLine line, int positionMs)
     {
@@ -24,13 +77,13 @@ public partial class MainWindow
         // 非中文歌词且有翻译 → 双行显示；中文歌/无翻译保持单行
         var translation = ShouldShowTranslation(line) ? line.Translation : null;
         LyricTranslationShadow.Text = translation ?? string.Empty;
-        LyricTranslationShadow.Visibility = string.IsNullOrEmpty(translation)
-            ? Visibility.Collapsed
-            : Visibility.Visible;
         LyricTranslation.Text = translation ?? string.Empty;
-        LyricTranslation.Visibility = string.IsNullOrEmpty(translation)
-            ? Visibility.Collapsed
-            : Visibility.Visible;
+        var hasTranslation = !string.IsNullOrEmpty(translation);
+        if (hasTranslation != _translationShown)
+        {
+            _translationShown = hasTranslation;
+            AnimateVisibility(LyricTranslationHost, hasTranslation);
+        }
 
         _lastProgress = -1;
         LyricTextBright.Clip = null; // 清掉上一行的裁剪，避免行时长缺失时残留旧边界
@@ -346,9 +399,12 @@ public partial class MainWindow
         _lastClipWidth = -1;
         _animatedClipWidth = -1;
         LyricTranslationShadow.Text = string.Empty;
-        LyricTranslationShadow.Visibility = Visibility.Collapsed;
         LyricTranslation.Text = string.Empty;
-        LyricTranslation.Visibility = Visibility.Collapsed;
+        if (_translationShown)
+        {
+            _translationShown = false;
+            AnimateVisibility(LyricTranslationHost, false);
+        }
         ReapplyLyricDisplay();
     }
 

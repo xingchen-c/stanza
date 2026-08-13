@@ -83,12 +83,11 @@
                                    Text="FluentLyrics 正在启动…"
                                    TextWrapping="NoWrap" />
                     </Grid>
-                    <Grid>
+                    <Grid x:Name="LyricTranslationHost" Visibility="Collapsed">
                         <TextBlock x:Name="LyricTranslationShadow"
                                    FontSize="12"
                                    Foreground="#66000000"
-                                   TextWrapping="NoWrap"
-                                   Visibility="Collapsed">
+                                   TextWrapping="NoWrap">
                             <TextBlock.RenderTransform>
                                 <TranslateTransform X="1" Y="1" />
                             </TextBlock.RenderTransform>
@@ -96,8 +95,7 @@
                         <TextBlock x:Name="LyricTranslation"
                                    FontSize="12"
                                    Foreground="#8EFFFFFF"
-                                   TextWrapping="NoWrap"
-                                   Visibility="Collapsed" />
+                                   TextWrapping="NoWrap" />
                     </Grid>
                 </StackPanel>
             </Canvas>
