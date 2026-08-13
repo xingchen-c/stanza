@@ -635,6 +635,24 @@
                             <ToggleButton Grid.Column="1" x:Name="AutoStartCheck"
                                           Style="{StaticResource ToggleSwitch}" VerticalAlignment="Center" />
                         </Grid>
+
+                        <Border Style="{StaticResource RowDivider}" />
+
+                        <Grid MinHeight="54" Margin="16,8,16,4">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="兼容模式" FontSize="14" Foreground="{StaticResource TextPrimaryBrush}" />
+                                <TextBlock Text="无显卡驱动/软件渲染时降级，避免卡片糊与闪烁" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" />
+                            </StackPanel>
+                            <ComboBox Grid.Row="1" x:Name="CompatibilityCombo" Style="{StaticResource FluentComboBox}" Margin="0,6,0,0">
+                                <ComboBoxItem Content="自动（检测到软件渲染时降级）" Tag="Auto" IsSelected="True" />
+                                <ComboBoxItem Content="强制降级" Tag="ForceOn" />
+                                <ComboBoxItem Content="禁用降级" Tag="ForceOff" />
+                            </ComboBox>
+                        </Grid>
                     </StackPanel>
                 </Border>
             </StackPanel>

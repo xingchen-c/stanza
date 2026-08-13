@@ -71,6 +71,13 @@ public partial class SettingsWindow
                 ColorCombo.SelectedItem = item;
                 break;
             }
+
+        foreach (ComboBoxItem item in CompatibilityCombo.Items)
+            if (item.Tag?.ToString() == settings.CompatibilityMode)
+            {
+                CompatibilityCombo.SelectedItem = item;
+                break;
+            }
     }
 
     /// <summary>保存成功后触发（主窗口据此重新应用设置）</summary>
@@ -111,7 +118,8 @@ public partial class SettingsWindow
             ManualOffsetX = _baseSettings.ManualOffsetX,
             ManualOffsetY = _baseSettings.ManualOffsetY,
             AutoCardWidth = AutoWidthCheck.IsChecked == true,
-            CardWidth = WidthSlider.Value
+            CardWidth = WidthSlider.Value,
+            CompatibilityMode = (CompatibilityCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Auto"
         };
 
         AppSettingsService.Save(settings);

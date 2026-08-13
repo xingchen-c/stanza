@@ -6,6 +6,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Windows.Media.Control;
@@ -37,6 +38,7 @@ public partial class MainWindow
     private readonly DispatcherTimer _fullscreenTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly TrayIconService _tray = new();
     private readonly Dictionary<string, double[]> _wordBoundaryCache = new(); // 行文本 → 各字结束位置的像素宽度
+    private static readonly Brush SoftwareRenderCardBrush = CreateSoftwareRenderCardBrush(); // 降级模式半透明深色卡片底
     private bool _adjustingPosition; // 托盘"调整歌词位置"模式（临时关闭点击穿透）
     private bool _clickThrough; // 鼠标点击穿透
     private int _currentIndex = -1;
@@ -60,6 +62,7 @@ public partial class MainWindow
     private Brush _lyricDimBrush = new SolidColorBrush(Color.FromArgb(110, 255, 255, 255)); // 暗色层画刷
     private Color _lyricDimColor = Color.FromArgb(110, 255, 255, 255);
     private string _reapplyDiagSig = string.Empty; // 布局诊断签名（仅变化时打印，防刷屏）
+    private bool? _lastRenderDowngraded; // 渲染降级上次状态（日志按变化打印 Info，其余 Debug）
 
     // ---- 运行时设置（来自 AppSettings）----
     private AppSettings _settings = AppSettingsService.Load();
@@ -101,6 +104,8 @@ public partial class MainWindow
         LyricHost.SizeChanged += (_, _) => ReapplyLyricDisplay();
         _taskbar.TaskbarChanged += PositionCard;
         _taskbar.ApplySettings(_settings);
+        // 渲染能力变化（远程桌面接入/断开、驱动变化）时重新应用降级
+        RenderCapability.TierChanged += OnRenderTierChanged;
 
         // 托盘：显示/隐藏、设置、打开日志目录、退出（Ctrl+Alt+Q 与 QQ 音乐快捷键冲突，已移除）
         _tray.ShowHideRequested += ToggleCardVisibility;
@@ -327,6 +332,64 @@ public partial class MainWindow
         _hwndSource?.AddHook(WndProc);
         ApplyWindowStyles();
         PositionCard();
+        ApplyRenderMode(); // 窗口句柄就绪后再判定渲染能力（TierChanged 也可能在此之前触发过）
+    }
+
+    /// <summary>是否软件渲染（无 GPU 加速，WPF 全部走 CPU 合成；Tier 高 16 位为 0）</summary>
+    private static bool IsSoftwareRendered() => (RenderCapability.Tier >> 16) == 0;
+
+    /// <summary>
+    ///     渲染降级（软件渲染环境）：去掉阴影（CPU blur 最贵）、文字改 Grayscale 抗锯齿、
+    ///     卡片垫半透明深色底、降低 ticker 刷新率——让无显卡驱动的机器"能看清、不闪"。
+    ///     有 GPU 的机器（Tier ≥ 1）完全不受影响；兼容模式设置变化时即时重应用。
+    /// </summary>
+    private void ApplyRenderMode()
+    {
+        var downgrade = _settings.CompatibilityMode switch
+        {
+            "ForceOn" => true,
+            "ForceOff" => false,
+            _ => IsSoftwareRendered()
+        };
+
+        if (downgrade)
+        {
+            LyricStack.Effect = null;
+            HoverPanel.Effect = null;
+            TextOptions.SetTextRenderingMode(this, TextRenderingMode.Grayscale);
+            LyricHost.Background = SoftwareRenderCardBrush;
+            _ticker.Interval = TimeSpan.FromMilliseconds(250);
+        }
+        else
+        {
+            LyricStack.Effect = TryFindResource("LyricShadowEffect") as DropShadowEffect;
+            HoverPanel.Effect = TryFindResource("HoverShadowEffect") as DropShadowEffect;
+            TextOptions.SetTextRenderingMode(this, TextRenderingMode.ClearType);
+            LyricHost.Background = Brushes.Transparent;
+            _ticker.Interval = TimeSpan.FromMilliseconds(100);
+        }
+
+        var tier = RenderCapability.Tier >> 16;
+        if (_lastRenderDowngraded != downgrade)
+        {
+            _lastRenderDowngraded = downgrade;
+            AppLog.Info($"渲染模式: Tier={tier} 降级={downgrade}（CompatibilityMode={_settings.CompatibilityMode}）");
+        }
+        else
+        {
+            AppLog.Debug($"渲染模式: Tier={tier} 降级={downgrade}（CompatibilityMode={_settings.CompatibilityMode}）");
+        }
+    }
+
+    /// <summary>渲染能力变化（远程桌面接入/断开、驱动变化）：重新应用降级</summary>
+    private void OnRenderTierChanged(object? sender, EventArgs e) => ApplyRenderMode();
+
+    /// <summary>降级模式卡片底：≈80% 不透明深色，遮软件渲染下的污渍并减少 per-pixel alpha 合成负担</summary>
+    private static Brush CreateSoftwareRenderCardBrush()
+    {
+        var brush = new SolidColorBrush(Color.FromArgb(0xCC, 0x1F, 0x1F, 0x1F));
+        brush.Freeze();
+        return brush;
     }
 
     /// <summary>
@@ -783,6 +846,7 @@ public partial class MainWindow
         PositionCard(); // 布局变化（封面/按钮占位）重新计算卡片与歌词可用宽度
         ReapplyLyricDisplay(); // 下一拍（100ms 内）会用新颜色重绘当前行
         _ = _smtc.RefreshTrackAsync(); // 开启媒体区后立即补一次封面
+        ApplyRenderMode(); // 兼容模式设置变化即时生效
     }
 
     /// <summary>根据设置颜色生成亮/暗两色（供双层文本与状态文本使用）</summary>
@@ -931,6 +995,7 @@ public partial class MainWindow
 
     protected override void OnClosed(EventArgs e)
     {
+        RenderCapability.TierChanged -= OnRenderTierChanged; // 退订静态事件，避免常驻引用
         _smtc.Dispose(); // 退订 SMTC 事件、取消"未找到歌词"恢复调度
         _fullscreenTimer.Stop();
         _ticker.Stop();

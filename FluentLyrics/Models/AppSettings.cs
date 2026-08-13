@@ -49,4 +49,10 @@ public sealed class AppSettings
 
     /// <summary>暂停时隐藏歌词卡片（false = 暂停时保持显示）</summary>
     public bool HideOnPause { get; set; } = true;
+
+    /// <summary>
+    ///     渲染兼容模式（低性能设备 / 无显卡驱动，软件渲染时透明窗口 + 阴影会糊成一片并闪烁）：
+    ///     Auto = 检测到软件渲染（RenderCapability.Tier=0）时自动降级；ForceOn = 强制降级；ForceOff = 禁用降级。
+    /// </summary>
+    public string CompatibilityMode { get; set; } = "Auto";
 }
