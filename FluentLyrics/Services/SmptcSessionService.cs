@@ -654,7 +654,7 @@ public sealed class SmptcSessionService : IDisposable
         TrackSwitchStarted?.Invoke();
         StatusChanged?.Invoke("正在获取歌词…");
         AppLog.Debug($"切歌信号触发（{reason}），等待新歌 key='{_switchKey}'");
-        PollForNewTrackAsync();
+        _ = PollForNewTrackAsync();
     }
 
     /// <summary>
@@ -667,11 +667,11 @@ public sealed class SmptcSessionService : IDisposable
             return;
         _switchSuspected = true;
         AppLog.Debug("位置回退疑似切歌，等待确认（区分拖动进度条）");
-        PollForTrackConfirmationAsync();
+        _ = PollForTrackConfirmationAsync();
     }
 
     /// <summary>疑似切歌确认：连续两次读到同一个新 key 才算确认，之后走完整切换流程；否则静默作罢</summary>
-    private async void PollForTrackConfirmationAsync()
+    private async Task PollForTrackConfirmationAsync()
     {
         try
         {
@@ -726,7 +726,7 @@ public sealed class SmptcSessionService : IDisposable
     ///     切歌早期信号已触发，但 MediaPropertiesChanged 事件可能滞后几百毫秒：
     ///     主动轮询媒体属性，歌名/歌手一变就立即开始搜歌词。
     /// </summary>
-    private async void PollForNewTrackAsync()
+    private async Task PollForNewTrackAsync()
     {
         try
         {
