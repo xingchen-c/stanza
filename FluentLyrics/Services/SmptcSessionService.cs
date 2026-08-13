@@ -40,8 +40,9 @@ public sealed class SmptcSessionService : IDisposable
 
     // "未找到歌词"后台补抓参数：只针对 NotFound（可能是临时失败）；
     // 纯音乐（Instrumental）/已加载（Loaded）是确定性结果，绝不补抓。
-    private const int NotFoundRefetchIntervalSec = 15; // 补抓间隔（秒）
-    private const int NotFoundRefetchMaxAttempts = 4;  // 补抓次数上限（约覆盖歌曲前 1 分钟）
+    // 退避序列 100→300→500→700→900ms 共 5 次：前几次毫秒级照顾短歌，
+    // 之后快速拉开，5 次仍失败说明大概率是接口/数据问题，不再轰炸上游。
+    private static readonly int[] NotFoundRefetchBackoffMs = [100, 300, 500, 700, 900];
 
     /// <summary>会话接入/断开（参数：是否已连接）</summary>
     public event Action<bool>? SessionChanged;
@@ -366,7 +367,7 @@ public sealed class SmptcSessionService : IDisposable
             StatusChanged?.Invoke(StatusTextFor(result));
     }
 
-    /// <summary>启动"未找到歌词"恢复调度：1.2s 快速重试 → 仍失败接 15s×4 后台补抓；切歌/断开会话自动取消。</summary>
+    /// <summary>启动"未找到歌词"恢复调度：快速重试 → 仍失败接指数退避补抓；切歌/断开会话自动取消。</summary>
     private void ScheduleNotFoundRecovery(string key, string title, string artist)
     {
         CancelNotFoundRecovery();
@@ -377,7 +378,7 @@ public sealed class SmptcSessionService : IDisposable
 
     /// <summary>
     ///     "未找到歌词"恢复循环（只针对 NotFound，可能是临时失败）：
-    ///     1.2s 快速重试（重新读最新时长）→ 仍失败接后台周期补抓（15s、最多 4 次）。
+    ///     快速重试（重新读最新时长）→ 仍失败接退避补抓（100→900ms 递增，共 5 次）。
     ///     返回 Loaded → 无缝换上歌词；返回 Instrumental → 确认真没歌词，切"纯音乐"提示并停止。
     /// </summary>
     private async Task RunNotFoundRecoveryAsync(string key, string title, string artist, CancellationTokenSource cts)
@@ -386,8 +387,8 @@ public sealed class SmptcSessionService : IDisposable
         {
             var token = cts.Token;
 
-            // 1. 快速重试：1.2s 后重新加载（此刻 EndTime 旧值问题通常已过）
-            await Task.Delay(1200, token);
+            // 1. 快速重试：300ms 后重新加载（此刻 EndTime 旧值问题通常已过；不拖太长，短歌等不起）
+            await Task.Delay(300, token);
             token.ThrowIfCancellationRequested();
             if (key != _currentKey || _session is null)
                 return;
@@ -406,9 +407,10 @@ public sealed class SmptcSessionService : IDisposable
             // 2. 快速重试也失败：正式显示"未找到歌词"，并启动后台周期补抓
             ApplyLoadResult(key, LyricsLoadResult.NotFound);
             var attempt = 0;
-            while (attempt < NotFoundRefetchMaxAttempts)
+            while (attempt < NotFoundRefetchBackoffMs.Length)
             {
-                await Task.Delay(TimeSpan.FromSeconds(NotFoundRefetchIntervalSec), token);
+                // 按退避序列（100→900ms）逐次补抓：前几次毫秒级照顾短歌，之后快速拉开保护上游接口
+                await Task.Delay(NotFoundRefetchBackoffMs[attempt], token);
                 token.ThrowIfCancellationRequested();
 
                 if (_session is null || key != _currentKey || _lyrics.Lines.Count > 0)
