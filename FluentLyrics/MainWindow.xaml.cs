@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Windows.Media.Control;
@@ -149,7 +150,8 @@ public partial class MainWindow
         _pausedDisplayPositionMs = -1;
         _lastPlayingSnapshotUtcMs = 0;
         CoverImage.Source = null;
-        CoverBorder.Visibility = Visibility.Collapsed;
+        // 封面位常驻：会话接入时显示占位（无封面显示音符），断开时收起
+        CoverBorder.Visibility = connected && _showMediaControls ? Visibility.Visible : Visibility.Collapsed;
         LyricViewport.Visibility = Visibility.Visible;
         HoverPanel.Visibility = Visibility.Collapsed;
         _hoverShowing = false;
@@ -201,8 +203,25 @@ public partial class MainWindow
     /// <summary>封面就绪/变化：更新封面显示并重算歌词布局（null = 无封面/失败）</summary>
     private void OnCoverChanged(string key, BitmapSource? source)
     {
+        // 封面位常驻（显隐由 _showMediaControls / 会话状态控制）：无封面显示占位音符，
+        // 有封面显示图，不再整体隐藏，避免切歌时"封面消失→出现"的跳跃；歌词宽度也随之稳定。
         CoverImage.Source = source;
-        CoverBorder.Visibility = source is null ? Visibility.Collapsed : Visibility.Visible;
+        // 渐入：封面图从透明淡入，避免"占位→图"硬切（渐入渐出）
+        if (source is not null)
+        {
+            CoverImage.Opacity = 0;
+            CoverImage.BeginAnimation(
+                UIElement.OpacityProperty,
+                new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(200))
+                {
+                    EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+                });
+        }
+        else
+        {
+            CoverImage.BeginAnimation(UIElement.OpacityProperty, null);
+            CoverImage.Opacity = 1;
+        }
         ReapplyLyricDisplay();
     }
 
@@ -749,6 +768,10 @@ public partial class MainWindow
             LyricViewport.Visibility = Visibility.Visible;
             HoverPanel.Visibility = Visibility.Collapsed;
             _hoverShowing = false;
+        }
+        else
+        {
+            CoverBorder.Visibility = Visibility.Visible; // 占位常驻
         }
 
         ApplyWindowStyles(); // 更新点击穿透需要重设窗口扩展样式

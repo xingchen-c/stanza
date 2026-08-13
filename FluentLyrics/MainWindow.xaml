@@ -101,7 +101,15 @@
                     </VisualBrush.Visual>
                 </VisualBrush>
             </Border.OpacityMask>
-            <Image x:Name="CoverImage" Stretch="UniformToFill" />
+            <!-- 封面位常驻：无封面时显示音符占位，有封面时图覆盖占位（避免切歌时封面消失→出现的跳跃） -->
+            <Grid>
+                <TextBlock Text="&#xE8D6;"
+                           FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                           FontSize="14"
+                           Foreground="#66FFFFFF"
+                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                <Image x:Name="CoverImage" Stretch="UniformToFill" />
+            </Grid>
         </Border>
 
         <!-- 悬停面板：按钮贴封面，歌名/歌手在右侧上下两行；无背景浮动，文字带阴影保证可读 -->
