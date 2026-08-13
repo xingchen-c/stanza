@@ -15,6 +15,7 @@ public partial class MainWindow
     /// <summary>渲染当前歌词行：暗色全文垫底，亮色层用 Clip 按进度从左揭开</summary>
     private void ShowLyricLine(LyricLine line, int positionMs)
     {
+        LyricTextShadow.Text = line.Text; // 偏移阴影始终与正词一致
         LyricTextDim.Text = line.Text;
         LyricTextDim.Foreground = _lyricDimBrush;
         LyricTextBright.Text = line.Text;
@@ -22,6 +23,10 @@ public partial class MainWindow
 
         // 非中文歌词且有翻译 → 双行显示；中文歌/无翻译保持单行
         var translation = ShouldShowTranslation(line) ? line.Translation : null;
+        LyricTranslationShadow.Text = translation ?? string.Empty;
+        LyricTranslationShadow.Visibility = string.IsNullOrEmpty(translation)
+            ? Visibility.Collapsed
+            : Visibility.Visible;
         LyricTranslation.Text = translation ?? string.Empty;
         LyricTranslation.Visibility = string.IsNullOrEmpty(translation)
             ? Visibility.Collapsed
@@ -333,12 +338,15 @@ public partial class MainWindow
     private void UpdateLyricDisplay(string text)
     {
         // 状态文本只走亮色层（无进度裁剪），暗色层清空避免残留上一行歌词的"鬼影"
+        LyricTextShadow.Text = text;
         LyricTextDim.Text = string.Empty;
         LyricTextBright.Text = text;
         LyricTextBright.Foreground = _lyricBrush;
         LyricTextBright.Clip = null;
         _lastClipWidth = -1;
         _animatedClipWidth = -1;
+        LyricTranslationShadow.Text = string.Empty;
+        LyricTranslationShadow.Visibility = Visibility.Collapsed;
         LyricTranslation.Text = string.Empty;
         LyricTranslation.Visibility = Visibility.Collapsed;
         ReapplyLyricDisplay();

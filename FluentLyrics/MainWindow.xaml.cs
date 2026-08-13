@@ -6,7 +6,6 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
-using System.Windows.Media.Effects;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Windows.Media.Control;
@@ -339,9 +338,10 @@ public partial class MainWindow
     private static bool IsSoftwareRendered() => (RenderCapability.Tier >> 16) == 0;
 
     /// <summary>
-    ///     渲染降级（软件渲染环境）：去掉阴影（CPU blur 最贵）、文字改 Grayscale 抗锯齿、
-    ///     卡片垫半透明深色底、降低 ticker 刷新率——让无显卡驱动的机器"能看清、不闪"。
+    ///     渲染降级（软件渲染环境）：文字改 Grayscale 抗锯齿、卡片垫半透明深色底、
+    ///     降低 ticker 刷新率——让无显卡驱动的机器"能看清、不闪"。
     ///     有 GPU 的机器（Tier ≥ 1）完全不受影响；兼容模式设置变化时即时重应用。
+    ///     （阴影已改用偏移伪阴影，不依赖 GPU blur，不再随降级开关。）
     /// </summary>
     private void ApplyRenderMode()
     {
@@ -354,16 +354,12 @@ public partial class MainWindow
 
         if (downgrade)
         {
-            LyricStack.Effect = null;
-            HoverPanel.Effect = null;
             TextOptions.SetTextRenderingMode(this, TextRenderingMode.Grayscale);
             LyricHost.Background = SoftwareRenderCardBrush;
             _ticker.Interval = TimeSpan.FromMilliseconds(250);
         }
         else
         {
-            LyricStack.Effect = TryFindResource("LyricShadowEffect") as DropShadowEffect;
-            HoverPanel.Effect = TryFindResource("HoverShadowEffect") as DropShadowEffect;
             TextOptions.SetTextRenderingMode(this, TextRenderingMode.ClearType);
             LyricHost.Background = Brushes.Transparent;
             _ticker.Interval = TimeSpan.FromMilliseconds(100);
@@ -437,10 +433,25 @@ public partial class MainWindow
             return new IntPtr(Htclient); // 调整模式交给 WPF 拖动逻辑
         }
 
-        if (_showMediaControls && IsInMediaRegion(x, y))
+        if (_showMediaControls)
         {
-            handled = true;
-            return new IntPtr(Htclient); // 封面/按钮可点击
+            // 悬停态由 100ms ticker 轮询更新，但首次命中测试先于轮询到达：
+            // 在命中测试前先按光标位置同步悬停态，避免第一次 WM_NCHITTEST 时
+            // HoverPanel 还未显示、按钮区域被判成穿透（悬停后要再动一下鼠标才可点）。
+            var cursor = GetCursorPosDips();
+            var hovering = cursor.X >= Left && cursor.X <= Left + Width &&
+                           cursor.Y >= Top && cursor.Y <= Top + Height;
+            if (hovering != _hoverShowing)
+            {
+                _hoverShowing = hovering;
+                ApplyHoverState();
+            }
+
+            if (IsInMediaRegion(x, y))
+            {
+                handled = true;
+                return new IntPtr(Htclient); // 封面/按钮可点击
+            }
         }
 
         if (_clickThrough)
@@ -819,8 +830,10 @@ public partial class MainWindow
         _wordBoundaryCache.Clear(); // 字号可能变化，逐字宽度缓存作废
         _lastClipWidth = -1;
         _animatedClipWidth = -1;
+        LyricTextShadow.FontSize = _settings.FontSize;
         LyricTextBright.FontSize = _settings.FontSize;
         LyricTextDim.FontSize = _settings.FontSize;
+        LyricTranslationShadow.FontSize = Math.Max(10, _settings.FontSize - 3);
         LyricTranslation.FontSize = Math.Max(10, _settings.FontSize - 3);
         LyricTextBright.Foreground = _lyricBrush;
         LyricTextDim.Foreground = _lyricDimBrush;

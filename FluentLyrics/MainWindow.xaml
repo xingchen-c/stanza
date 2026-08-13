@@ -18,11 +18,6 @@
         FontFamily="Segoe UI Variable, Segoe UI, Microsoft YaHei UI"
         TextOptions.TextRenderingMode="ClearType"
         TextOptions.TextFormattingMode="Ideal">
-    <Window.Resources>
-        <!-- 歌词/悬停面板阴影：软件渲染降级时置 null，恢复时从这里引用同一份参数 -->
-        <DropShadowEffect x:Key="LyricShadowEffect" BlurRadius="6" ShadowDepth="1" Opacity="0.75" Color="Black" />
-        <DropShadowEffect x:Key="HoverShadowEffect" BlurRadius="4" ShadowDepth="0" Opacity="0.8" Color="Black" />
-    </Window.Resources>
     <Grid x:Name="LyricHost" ClipToBounds="True" Margin="0">
         <Grid.Resources>
             <!-- 播放控制按钮：Segoe MDL2 Assets 图标，透明底，悬停微亮 -->
@@ -67,10 +62,17 @@
                     <StackPanel.RenderTransform>
                         <TranslateTransform x:Name="LyricTranslate" />
                     </StackPanel.RenderTransform>
-                    <StackPanel.Effect>
-                        <StaticResource ResourceKey="LyricShadowEffect" />
-                    </StackPanel.Effect>
                     <Grid x:Name="LyricContent">
+                        <!-- 偏移伪阴影：黑色文本右下偏移 1px，代替 GPU blur 的 DropShadowEffect，
+                             避免 Win10 分层窗口/软件渲染下阴影糊成黑块 -->
+                        <TextBlock x:Name="LyricTextShadow"
+                                   FontSize="15"
+                                   Foreground="#80000000"
+                                   TextWrapping="NoWrap">
+                            <TextBlock.RenderTransform>
+                                <TranslateTransform X="1" Y="1" />
+                            </TextBlock.RenderTransform>
+                        </TextBlock>
                         <TextBlock x:Name="LyricTextDim"
                                    FontSize="15"
                                    Foreground="#6EFFFFFF"
@@ -81,11 +83,22 @@
                                    Text="FluentLyrics 正在启动…"
                                    TextWrapping="NoWrap" />
                     </Grid>
-                    <TextBlock x:Name="LyricTranslation"
-                               FontSize="12"
-                               Foreground="#8EFFFFFF"
-                               TextWrapping="NoWrap"
-                               Visibility="Collapsed" />
+                    <Grid>
+                        <TextBlock x:Name="LyricTranslationShadow"
+                                   FontSize="12"
+                                   Foreground="#66000000"
+                                   TextWrapping="NoWrap"
+                                   Visibility="Collapsed">
+                            <TextBlock.RenderTransform>
+                                <TranslateTransform X="1" Y="1" />
+                            </TextBlock.RenderTransform>
+                        </TextBlock>
+                        <TextBlock x:Name="LyricTranslation"
+                                   FontSize="12"
+                                   Foreground="#8EFFFFFF"
+                                   TextWrapping="NoWrap"
+                                   Visibility="Collapsed" />
+                    </Grid>
                 </StackPanel>
             </Canvas>
         </Canvas>
@@ -117,32 +130,33 @@
             </Grid>
         </Border>
 
-        <!-- 悬停面板：按钮贴封面，歌名/歌手在右侧上下两行；无背景浮动，文字带阴影保证可读 -->
-        <StackPanel x:Name="HoverPanel"
-                    Orientation="Horizontal"
-                    HorizontalAlignment="Right" VerticalAlignment="Center"
-                    Margin="0,0,6,0"
-                    Visibility="Collapsed">
-            <StackPanel.Effect>
-                <StaticResource ResourceKey="HoverShadowEffect" />
-            </StackPanel.Effect>
+        <!-- 悬停面板：按钮贴封面，歌名/歌手在右侧上下两行；半透明深色圆角底代替发光阴影，保证浅色任务栏可读 -->
+        <Border x:Name="HoverPanel"
+                HorizontalAlignment="Right" VerticalAlignment="Center"
+                Margin="0,0,6,0"
+                Padding="6,4,10,4"
+                CornerRadius="8"
+                Background="#66000000"
+                Visibility="Collapsed">
             <StackPanel Orientation="Horizontal">
-                <Button x:Name="PrevButton" Content="&#xE892;" Click="OnPrevClick" Style="{StaticResource MediaButton}" />
-                <Button x:Name="PlayPauseButton" Content="&#xE768;" Click="OnPlayPauseClick" Style="{StaticResource MediaButton}" />
-                <Button x:Name="NextButton" Content="&#xE893;" Click="OnNextClick" Style="{StaticResource MediaButton}" />
+                <StackPanel Orientation="Horizontal">
+                    <Button x:Name="PrevButton" Content="&#xE892;" Click="OnPrevClick" Style="{StaticResource MediaButton}" />
+                    <Button x:Name="PlayPauseButton" Content="&#xE768;" Click="OnPlayPauseClick" Style="{StaticResource MediaButton}" />
+                    <Button x:Name="NextButton" Content="&#xE893;" Click="OnNextClick" Style="{StaticResource MediaButton}" />
+                </StackPanel>
+                <StackPanel Orientation="Vertical" Margin="12,0,0,0" VerticalAlignment="Center">
+                    <TextBlock x:Name="TrackTitleText"
+                               FontSize="12" FontWeight="SemiBold"
+                               Foreground="White"
+                               TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                               MaxWidth="120" />
+                    <TextBlock x:Name="TrackArtistText"
+                               FontSize="10"
+                               Foreground="#BFFFFFFF"
+                               TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                               MaxWidth="120" />
+                </StackPanel>
             </StackPanel>
-            <StackPanel Orientation="Vertical" Margin="12,0,0,0" VerticalAlignment="Center">
-                <TextBlock x:Name="TrackTitleText"
-                           FontSize="12" FontWeight="SemiBold"
-                           Foreground="White"
-                           TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
-                           MaxWidth="120" />
-                <TextBlock x:Name="TrackArtistText"
-                           FontSize="10"
-                           Foreground="#BFFFFFFF"
-                           TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
-                           MaxWidth="120" />
-            </StackPanel>
-        </StackPanel>
+        </Border>
     </Grid>
 </Window>
