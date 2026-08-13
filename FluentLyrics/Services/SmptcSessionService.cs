@@ -409,8 +409,9 @@ public sealed class SmptcSessionService : IDisposable
                 return; // 成功 / 纯音乐：恢复完成
             }
 
-            // 2. 快速重试也失败：正式显示"未找到歌词"，并启动后台周期补抓
-            ApplyLoadResult(key, LyricsLoadResult.NotFound);
+            // 2. 快速重试也失败：先不显示"未找到歌词"（保留"正在获取歌词…"占位），
+            //    继续后台补抓；只有全部补抓都失败才显示，避免"未找到→又出歌词"的闪烁。
+            ApplyLoadResult(key, LyricsLoadResult.NotFound, showNotFound: false);
             var attempt = 0;
             while (attempt < NotFoundRefetchBackoffMs.Length)
             {
@@ -443,6 +444,10 @@ public sealed class SmptcSessionService : IDisposable
                 ApplyLoadResult(key, result);
                 return;
             }
+
+            // 全部补抓仍失败：确认为 NotFound，才显示"未找到歌词"
+            AppLog.Info($"NotFound 补抓 {NotFoundRefetchBackoffMs.Length} 次均失败，确认无歌词");
+            ApplyLoadResult(key, LyricsLoadResult.NotFound);
         }
         catch (OperationCanceledException)
         {

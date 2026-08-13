@@ -23,6 +23,61 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
 
     public string Name => "QQ 音乐";
 
+    /// <summary>
+    ///     搜索候选：SMTC 标题常带 "(中文翻译)" 这类括号副标题，完整标题搜不到时，
+    ///     去掉尾部括号副标题再搜一次作为兜底（QQ 搜索可能被脏标题卡住）。
+    /// </summary>
+    private static async Task<IReadOnlyList<QQMusicSearchResult>> SearchWithTitleFallbackAsync(
+        string title, string artist, int? durationMs)
+    {
+        var variants = new List<string> { title };
+        var cleaned = StripTrailingParenthetical(title);
+        if (cleaned is not null && !string.Equals(cleaned, title, StringComparison.Ordinal))
+            variants.Add(cleaned);
+
+        foreach (var variant in variants)
+        {
+            try
+            {
+                var metadata = new TrackMetadata { Title = variant, Artist = artist, DurationMs = durationMs };
+                var results = await SearcherHelper.QQMusicSearcher.SearchForResults(metadata);
+                var candidates = (results ?? []).OfType<QQMusicSearchResult>().ToList();
+                if (candidates.Count > 0)
+                {
+                    if (!string.Equals(variant, title, StringComparison.Ordinal))
+                        AppLog.Info($"QQ 搜索兜底：'{title}' 搜不到，清洗标题 '{variant}' 找到 {candidates.Count} 个候选");
+                    return candidates;
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn($"QQ 搜索失败（标题='{variant}'）: {ex.Message}");
+            }
+        }
+
+        return [];
+    }
+
+    /// <summary>去掉标题尾部的括号副标题（半角/全角圆括号），返回清洗后的标题；无括号或只剩空白返回 null</summary>
+    private static string? StripTrailingParenthetical(string title)
+    {
+        var trimmed = title.Trim();
+        if (trimmed.Length < 2 || trimmed[^1] is not (')' or '）'))
+            return null;
+
+        // 从末尾右括号往前找最近的左括号，把这一对括号及其内容去掉
+        for (var i = trimmed.Length - 2; i >= 0; i--)
+        {
+            if (trimmed[i] is '(' or '（')
+            {
+                var head = trimmed[..i].TrimEnd();
+                return head.Length > 0 ? head : null;
+            }
+        }
+
+        return null;
+    }
+
     public async Task<LyricsResult> LoadAsync(string title, string artist, int? durationMs)
     {
         if (string.IsNullOrWhiteSpace(title))
@@ -30,23 +85,15 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
 
         try
         {
-            // 1. 用歌曲信息在 QQ 音乐搜索，拿到候选列表
-            var metadata = new TrackMetadata
-            {
-                Title = title,
-                Artist = artist,
-                DurationMs = durationMs
-            };
-
-            var results = await SearcherHelper.QQMusicSearcher.SearchForResults(metadata);
-            if (results is null || results.Count == 0)
+            // 1. 用歌曲信息在 QQ 音乐搜索，拿到候选列表；完整标题搜不到时用清洗标题兜底
+            var results = await SearchWithTitleFallbackAsync(title, artist, durationMs);
+            if (results.Count == 0)
                 return new LyricsResult(LyricsLoadResult.NotFound, []);
 
             // 2. 多维综合打分排序后逐个取词：歌名无关的硬门槛提前过滤；
             //    跳过无歌词（纯音乐）的版本，直到找到带歌词的正确版本。
             //    全部无歌词 → 返回 Instrumental（确认真纯音乐）。
             var ranked = results
-                .OfType<QQMusicSearchResult>()
                 .Where(r => TitlesRelated(r.Title ?? title, title)) // 硬门槛：歌名完全无关的不进打分
                 .Select((r, index) => (Candidate: r, Index: index, Score: ComputeMatchScore(
                     r.Title, r.Artists, r.Album, r.DurationMs, r.MatchType,
@@ -242,10 +289,8 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
 
         try
         {
-            var metadata = new TrackMetadata { Title = title, Artist = artist, DurationMs = durationMs };
-            var results = await SearcherHelper.QQMusicSearcher.SearchForResults(metadata);
-            return (results ?? [])
-                .OfType<QQMusicSearchResult>()
+            var results = await SearchWithTitleFallbackAsync(title, artist, durationMs);
+            return results
                 .Select(r => new LyricCandidate(
                     Key,
                     Name,

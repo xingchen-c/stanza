@@ -622,6 +622,11 @@ public partial class MainWindow
         if (_smtc.Session is null)
             return false;
 
+        // 切歌时 QQ 会短暂发 Stopped（切换序列的一部分），不是真的停止播放：
+        // 此时保持卡片可见，避免整卡「藏一下→再出现」的闪烁。
+        if (_smtc.IsSwitchingTrack)
+            return false;
+
         try
         {
             var status = _smtc.Session.GetPlaybackInfo().PlaybackStatus;
