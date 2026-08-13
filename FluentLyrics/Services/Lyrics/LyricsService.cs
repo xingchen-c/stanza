@@ -83,14 +83,14 @@ public sealed class LyricsService
                 var completed = await Task.WhenAny(loadTask, Task.Delay(TimeSpan.FromSeconds(remainingSec)));
                 if (completed != loadTask)
                 {
-                    AppLog.Warn($"歌词源 {provider.Name} 超过 {remainingSec:F1}s 未返回，本轮放弃");
+                    AppLog.Warn($"歌词源 {provider.Name} 超过 {remainingSec:F1}s 未返回，转下一个源");
                     // 超时后任务仍在后台跑（Lyricify API 不接受取消）：观察异常，避免 UnobservedTaskException
                     _ = loadTask.ContinueWith(t =>
                     {
                         if (t.IsFaulted)
                             AppLog.Warn($"歌词源 {provider.Name} 超时后异常: {t.Exception?.GetBaseException().Message}");
                     }, TaskScheduler.Default);
-                    break; // 该源超时：本轮不再等待后续源，交给上层重试/补抓
+                    continue; // 该源超时：给下一个源（LRCLIB 兜底）剩余预算，而不是整条链直接放弃
                 }
 
                 result = await loadTask;
