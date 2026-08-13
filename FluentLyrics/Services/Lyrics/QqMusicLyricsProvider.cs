@@ -11,6 +11,14 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
     /// <summary>自动匹配最多尝试的候选数：避免同名多版本时逐个取词拖太久</summary>
     private const int MaxAutoAttempts = 4;
 
+    // ---- 综合打分权重（MATCH-SCORING）：缺失维度自动归一化重分配 ----
+    private const double TitleWeight = 0.35;
+    private const double DurationWeight = 0.25;
+    private const double MatchTypeWeight = 0.20;
+    private const double ArtistWeight = 0.15;
+    private const double AlbumWeight = 0.05;
+    private const double DurationTauMs = 8000; // 时长接近度衰减尺度（8s 处 0.5）
+
     public string Key => "QQ";
 
     public string Name => "QQ 音乐";
@@ -34,42 +42,30 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
             if (results is null || results.Count == 0)
                 return new LyricsResult(LyricsLoadResult.NotFound, []);
 
-            // 2. 逐个尝试候选：跳过时长不匹配（旧时长误配）与无歌词（纯音乐）的版本，
-            //    直到找到带歌词的正确版本。全部无歌词 → 返回 Instrumental（确认真纯音乐）。
+            // 2. 多维综合打分排序后逐个取词：歌名无关的硬门槛提前过滤；
+            //    跳过无歌词（纯音乐）的版本，直到找到带歌词的正确版本。
+            //    全部无歌词 → 返回 Instrumental（确认真纯音乐）。
             var sawInstrumental = false;
             var attempts = 0;
-            // 按匹配度（Perfect 优先）排序，同级再按时长差近的优先：
-            // 同名多版本时长接近时，高匹配度的候选更可能是用户正在听的那个版本。
             var ordered = results
                 .OfType<QQMusicSearchResult>()
-                .OrderByDescending(r => MatchTypeRank(r.MatchType))
-                .ThenBy(r => DurationDeltaMs(r, durationMs));
+                .Where(r => TitlesRelated(r.Title ?? title, title)) // 硬门槛：歌名完全无关的不进打分
+                .Select((r, index) => (Candidate: r, Index: index))
+                .OrderByDescending(x => ComputeMatchScore(
+                    x.Candidate.Title, x.Candidate.Artists, x.Candidate.Album,
+                    x.Candidate.DurationMs, x.Candidate.MatchType,
+                    title, artist, durationMs))
+                .ThenBy(x => x.Index) // 同分保持搜索原顺序，避免排序抖动
+                .Select(x => x.Candidate);
             foreach (var qq in ordered)
             {
                 if (++attempts > MaxAutoAttempts)
                     break;
 
-                AppLog.Debug($"QQ 候选尝试 {attempts}: '{qq.Title}' / {string.Join(", ", qq.Artists)} / 专辑='{qq.Album}' / 时长={qq.DurationMs?.ToString() ?? "?"}ms / MatchType={qq.MatchType}");
-
-                // 候选名比对（第一道防线，取词前）：候选的歌名与期望歌名完全无关
-                // （如"伴宅日记"的搜索结果里混入同歌手的"狼人杀狂想曲"）→ 直接跳过，省一次取词。
-                if (!TitlesRelated(qq.Title ?? title, title))
-                {
-                    AppLog.Debug($"候选歌名与当前歌曲不符，跳过: '{qq.Title}'");
-                    continue;
-                }
-
-                // 时长校验只用于低匹配度候选：SMTC 的 EndTime 本身可能报错
-                // （如"伴宅日记"实际 263s，SMTC 却报 210s，差 52s），高匹配度候选要信任匹配度直接尝试；
-                // 只有 Medium 及以下的低匹配度 + 时长差 >15s，才判定为误配（旧时长/同名其他歌）。
-                if (MatchTypeRank(qq.MatchType) < 3 &&
-                    durationMs is { } expected &&
-                    qq.DurationMs is { } actual &&
-                    Math.Abs(actual - expected) > 15000)
-                {
-                    AppLog.Debug($"候选时长不匹配，跳过: 期望={expected}ms 实际={actual}ms 歌曲='{qq.Title}'");
-                    continue;
-                }
+                var score = ComputeMatchScore(
+                    qq.Title, qq.Artists, qq.Album, qq.DurationMs, qq.MatchType,
+                    title, artist, durationMs);
+                AppLog.Debug($"QQ 候选尝试 {attempts}: '{qq.Title}' / {string.Join(", ", qq.Artists)} / 专辑='{qq.Album}' / 时长={qq.DurationMs?.ToString() ?? "?"}ms / MatchType={qq.MatchType} / 综合分={score:F2}");
 
                 var result = await LoadBySongIdAsync(qq.Id, qq.Title ?? title);
                 if (result.Status == LyricsLoadResult.Loaded)
@@ -120,6 +116,124 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
         if (expected is null || r.DurationMs is not { } actual)
             return 0;
         return Math.Abs(actual - expected.Value);
+    }
+
+    /// <summary>歌名相似度 [0,1]：完全相等 1.0；一方包含 0.6+0.4×min/max；无关 0</summary>
+    internal static double TitleScore(string? candidateTitle, string expectedTitle)
+    {
+        var a = Normalize(candidateTitle ?? string.Empty);
+        var b = Normalize(expectedTitle);
+        if (a.Length == 0 || b.Length == 0)
+            return 0;
+        if (a == b)
+            return 1.0;
+        if (a.Contains(b) || b.Contains(a))
+        {
+            var min = Math.Min(a.Length, b.Length);
+            var max = Math.Max(a.Length, b.Length);
+            return 0.6 + 0.4 * (min / (double)max);
+        }
+
+        return 0;
+    }
+
+    /// <summary>歌手匹配度 [0,1]；期望歌手为空 → null（维度缺失，归一化时不计入）</summary>
+    internal static double? ArtistScore(string[]? candidateArtists, string? expectedArtist)
+    {
+        if (string.IsNullOrWhiteSpace(expectedArtist))
+            return null; // 维度缺失
+
+        var candidate = string.Join(",", candidateArtists ?? []);
+        var a = Normalize(candidate);
+        var b = Normalize(expectedArtist);
+        if (a.Length == 0 || b.Length == 0)
+            return 0.2;
+        if (a == b || a.Contains(b) || b.Contains(a))
+            return 1.0;
+
+        // 多歌手（"李凯年/李琳"）按分隔符拆开：集合完全相等（顺序/分隔符不同）→ 1.0，部分交集 → 0.6
+        var aParts = SplitArtists(a);
+        var bParts = SplitArtists(b);
+        if (aParts.SetEquals(bParts))
+            return 1.0;
+        return aParts.Overlaps(bParts) ? 0.6 : 0.2;
+    }
+
+    private static HashSet<string> SplitArtists(string normalized)
+    {
+        return normalized
+            .Split(['/', ',', '、'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .Where(s => s.Length > 0)
+            .ToHashSet();
+    }
+
+    /// <summary>时长接近度 [0,1]：1/(1+(Δ/τ)²) 平滑衰减，不做硬截断；任一时长缺失 → null</summary>
+    internal static double? DurationScore(int? candidateDurationMs, int? expectedDurationMs)
+    {
+        if (candidateDurationMs is not { } actual || expectedDurationMs is not { } expected)
+            return null; // 维度缺失
+
+        var delta = Math.Abs(actual - expected);
+        return 1.0 / (1.0 + Math.Pow(delta / DurationTauMs, 2));
+    }
+
+    /// <summary>MatchType 归一化 [0,1]：Perfect=1.0 … Unknown=0（始终计入）</summary>
+    internal static double MatchTypeScore(object? matchType)
+    {
+        return MatchTypeRank(matchType) / 5.0;
+    }
+
+    /// <summary>专辑匹配度；期望专辑为空 → null（维度缺失，归一化时不计入）</summary>
+    internal static double? AlbumScore(string? candidateAlbum, string? expectedAlbum)
+    {
+        if (string.IsNullOrWhiteSpace(expectedAlbum))
+            return null; // 维度缺失
+
+        var a = Normalize(candidateAlbum ?? string.Empty);
+        var b = Normalize(expectedAlbum);
+        if (a.Length == 0 || b.Length == 0)
+            return 0.3;
+        return a == b || a.Contains(b) || b.Contains(a) ? 1.0 : 0.3;
+    }
+
+    /// <summary>
+    ///     多维综合打分 [0,1]：只对未缺失维度加权求和并归一化，任一信号失真时其他维度能纠偏。
+    ///     纯函数、不依赖库类型入参，便于单测；album 暂不传（缺失自动排除）。
+    /// </summary>
+    internal static double ComputeMatchScore(
+        string? candidateTitle, string[]? candidateArtists, string? candidateAlbum,
+        int? candidateDurationMs, object? matchType,
+        string expectedTitle, string? expectedArtist,
+        int? expectedDurationMs, string? expectedAlbum = null)
+    {
+        double sum = 0, weight = 0;
+
+        sum += TitleWeight * TitleScore(candidateTitle, expectedTitle);
+        weight += TitleWeight;
+
+        if (ArtistScore(candidateArtists, expectedArtist) is { } artistScore)
+        {
+            sum += ArtistWeight * artistScore;
+            weight += ArtistWeight;
+        }
+
+        if (DurationScore(candidateDurationMs, expectedDurationMs) is { } durationScore)
+        {
+            sum += DurationWeight * durationScore;
+            weight += DurationWeight;
+        }
+
+        sum += MatchTypeWeight * MatchTypeScore(matchType);
+        weight += MatchTypeWeight;
+
+        if (AlbumScore(candidateAlbum, expectedAlbum) is { } albumScore)
+        {
+            sum += AlbumWeight * albumScore;
+            weight += AlbumWeight;
+        }
+
+        return weight > 0 ? sum / weight : 0;
     }
 
     /// <summary>搜索候选列表（手动选择歌词用）：返回 QQ 搜索的多条结果</summary>

@@ -6,6 +6,13 @@ namespace FluentLyrics.Tests;
 /// <summary>QQ 歌词源匹配/解析纯函数的行为锁定（用历史上出过 bug 的真实场景）</summary>
 public class QqMusicMatchingTests
 {
+    /// <summary>浮点断言：xUnit 的 precision 重载在 2.9 有歧义，用容差替代</summary>
+    private static void AssertClose(double expected, double? actual, double tolerance = 1e-5)
+    {
+        Assert.True(actual is { } v && Math.Abs(expected - v) <= tolerance,
+            $"期望 {expected}，实际 {actual}");
+    }
+
     // ---- 歌名相关性 ----
 
     [Theory]
@@ -81,5 +88,107 @@ public class QqMusicMatchingTests
         var map = new Dictionary<int, string> { [1000] = "你好" };
         Assert.Equal("你好", QqMusicLyricsProvider.MatchByTime(1100, map)); // ±300ms 内
         Assert.Null(QqMusicLyricsProvider.MatchByTime(2000, map));          // 超出容差
+    }
+
+    // ---- 综合打分（MATCH-SCORING）----
+
+    [Fact]
+    public void TitleScore_完全相等满分()
+    {
+        AssertClose(1.0, QqMusicLyricsProvider.TitleScore("伴宅日记", "伴宅日记"));
+    }
+
+    [Fact]
+    public void TitleScore_合集长标题低于满分()
+    {
+        var score = QqMusicLyricsProvider.TitleScore("【洛天依】伴宅日记【H6音乐】", "伴宅日记");
+        Assert.True(score < 1.0 && score > 0.6);
+    }
+
+    [Fact]
+    public void DurationScore_平滑衰减锁定Tau()
+    {
+        AssertClose(1.0, QqMusicLyricsProvider.DurationScore(1000, 1000));
+        AssertClose(0.5, QqMusicLyricsProvider.DurationScore(9000, 1000), 0.01); // Δ=8s → 0.5
+        Assert.True(QqMusicLyricsProvider.DurationScore(31000, 1000)!.Value < 0.1); // Δ=30s → ≈0.07
+    }
+
+    [Fact]
+    public void DurationScore_任一时长缺失为缺失()
+    {
+        Assert.Null(QqMusicLyricsProvider.DurationScore(null, 1000));
+        Assert.Null(QqMusicLyricsProvider.DurationScore(1000, null));
+    }
+
+    [Fact]
+    public void ArtistScore_相等满分()
+    {
+        AssertClose(1.0, QqMusicLyricsProvider.ArtistScore(["李凯年"], "李凯年"));
+    }
+
+    [Fact]
+    public void ArtistScore_多歌手集合相同分隔符不同满分()
+    {
+        // 候选 join 后 "李凯年,李琳"，期望 "李凯年/李琳"：集合相同 → 1.0
+        AssertClose(1.0, QqMusicLyricsProvider.ArtistScore(["李琳", "李凯年"], "李凯年/李琳"));
+    }
+
+    [Fact]
+    public void ArtistScore_部分交集()
+    {
+        // 候选 ["李凯年","张三"] 与期望 "李凯年/李琳" 无包含关系，但共享"李凯年" → 0.6
+        AssertClose(0.6, QqMusicLyricsProvider.ArtistScore(["李凯年", "张三"], "李凯年/李琳"));
+    }
+
+    [Fact]
+    public void ArtistScore_无交集()
+    {
+        AssertClose(0.2, QqMusicLyricsProvider.ArtistScore(["许嵩"], "李凯年"));
+    }
+
+    [Fact]
+    public void ArtistScore_期望歌手空为缺失()
+    {
+        Assert.Null(QqMusicLyricsProvider.ArtistScore(["许嵩"], null));
+    }
+
+    [Fact]
+    public void 全维匹配高分()
+    {
+        var score = QqMusicLyricsProvider.ComputeMatchScore(
+            "美人蕉", ["李凯年", "李琳"], "专辑", 234000, "PrettyHigh",
+            "美人蕉", "李凯年/李琳", 237000);
+        Assert.True(score > 0.9);
+    }
+
+    [Fact]
+    public void 时长严重错报仍保持中高分_不再一票否决()
+    {
+        // 历史场景：伴宅日记 SMTC 错报 210s，实际 263s，差 53s
+        var score = QqMusicLyricsProvider.ComputeMatchScore(
+            "伴宅日记", ["千月兔"], null, 263000, "High",
+            "伴宅日记", "千月兔", 210000);
+        Assert.True(score > 0.5);
+    }
+
+    [Fact]
+    public void 同名两候选时长近者优先()
+    {
+        double Score(int duration) => QqMusicLyricsProvider.ComputeMatchScore(
+            "伴宅日记", ["千月兔"], null, duration, "Medium",
+            "伴宅日记", "千月兔", 263000);
+        Assert.True(Score(263000) > Score(210000));
+    }
+
+    [Fact]
+    public void 时长缺失归一化重分配_不比时长严重错误更差()
+    {
+        double WithoutDuration() => QqMusicLyricsProvider.ComputeMatchScore(
+            "伴宅日记", ["千月兔"], null, null, "High",
+            "伴宅日记", "千月兔", null);
+        double WithBadDuration() => QqMusicLyricsProvider.ComputeMatchScore(
+            "伴宅日记", ["千月兔"], null, 1000, "High",
+            "伴宅日记", "千月兔", 263000); // 时长分≈0
+        Assert.True(WithoutDuration() > WithBadDuration());
     }
 }
