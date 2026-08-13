@@ -30,6 +30,7 @@ public sealed class SmptcSessionService : IDisposable
     private bool _switchSuspected;
     private GlobalSystemMediaTransportControlsSessionPlaybackStatus? _lastPlaybackStatus;
     private long _lastSwitchStartUtcMs;
+    private long _resumeBoundaryUtcMs; // 最近一次"非播放→播放"边界（UTC 毫秒）：外推只信任该时刻之后的快照
     private int _lastSwitchCompletedAt = -1;
     private double _lastEndTimeMs = -1;
     private int _lastTickPositionMs = -1;
@@ -81,6 +82,9 @@ public sealed class SmptcSessionService : IDisposable
 
     /// <summary>最近一次切歌开始（UTC 毫秒），与 SMTC Position 快照时间比较</summary>
     public long LastSwitchStartUtcMs => _lastSwitchStartUtcMs;
+
+    /// <summary>最近一次从暂停/停止恢复到播放的边界时刻（UTC 毫秒）</summary>
+    public long ResumeBoundaryUtcMs => _resumeBoundaryUtcMs;
 
     /// <summary>歌词库（UI 渲染读取行数据）</summary>
     public LyricsService Lyrics => _lyrics;
@@ -159,6 +163,7 @@ public sealed class SmptcSessionService : IDisposable
         _switchSuspected = false;
         _lastPlaybackStatus = null;
         _lastSwitchStartUtcMs = 0;
+        _resumeBoundaryUtcMs = 0;
         _lastSwitchCompletedAt = -1;
 
         if (_session is null)
@@ -797,7 +802,15 @@ public sealed class SmptcSessionService : IDisposable
                 PlaybackStatusChanged?.Invoke(status);
                 return;
             }
+            var previous = _lastPlaybackStatus;
             _lastPlaybackStatus = status;
+
+            // 从暂停/停止恢复到播放：记录边界时刻。
+            // 渲染层只对"不早于该时刻"的 Position 快照做外推，避免把暂停时长当播放时长
+            // （卡拉OK线在恢复瞬间先假跳、再被新快照拉回）。
+            if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing &&
+                previous != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+                _resumeBoundaryUtcMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
             // 从未播放/停止状态开始播放且当前没有歌词 → 主动刷新加载。
             // 播放开始时 SMTC 可能只推 PlaybackInfoChanged 而不推 MediaPropertiesChanged，
