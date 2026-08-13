@@ -45,27 +45,33 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
             // 2. 多维综合打分排序后逐个取词：歌名无关的硬门槛提前过滤；
             //    跳过无歌词（纯音乐）的版本，直到找到带歌词的正确版本。
             //    全部无歌词 → 返回 Instrumental（确认真纯音乐）。
-            var sawInstrumental = false;
-            var attempts = 0;
-            var ordered = results
+            var ranked = results
                 .OfType<QQMusicSearchResult>()
                 .Where(r => TitlesRelated(r.Title ?? title, title)) // 硬门槛：歌名完全无关的不进打分
-                .Select((r, index) => (Candidate: r, Index: index))
-                .OrderByDescending(x => ComputeMatchScore(
-                    x.Candidate.Title, x.Candidate.Artists, x.Candidate.Album,
-                    x.Candidate.DurationMs, x.Candidate.MatchType,
-                    title, artist, durationMs))
+                .Select((r, index) => (Candidate: r, Index: index, Score: ComputeMatchScore(
+                    r.Title, r.Artists, r.Album, r.DurationMs, r.MatchType,
+                    title, artist, durationMs)))
+                .OrderByDescending(x => x.Score)
                 .ThenBy(x => x.Index) // 同分保持搜索原顺序，避免排序抖动
-                .Select(x => x.Candidate);
-            foreach (var qq in ordered)
+                .ToList();
+
+            // 诊断（Info 级落盘）：偶发匹配错时需要看到完整候选分布，定位正确候选排到第几
+            AppLog.Info($"QQ 匹配输入: '{title}' / '{artist}' / 时长={durationMs?.ToString() ?? "?"}ms，通过硬门槛候选数={ranked.Count}");
+            for (var i = 0; i < Math.Min(ranked.Count, 10); i++)
+            {
+                var c = ranked[i];
+                AppLog.Info($"QQ 候选[{i + 1}] 分={c.Score:F2} '{c.Candidate.Title}' / {string.Join(", ", c.Candidate.Artists)} / 专辑='{c.Candidate.Album}' / 时长={c.Candidate.DurationMs?.ToString() ?? "?"}ms / MatchType={c.Candidate.MatchType}");
+            }
+
+            var sawInstrumental = false;
+            var attempts = 0;
+            foreach (var item in ranked)
             {
                 if (++attempts > MaxAutoAttempts)
                     break;
 
-                var score = ComputeMatchScore(
-                    qq.Title, qq.Artists, qq.Album, qq.DurationMs, qq.MatchType,
-                    title, artist, durationMs);
-                AppLog.Debug($"QQ 候选尝试 {attempts}: '{qq.Title}' / {string.Join(", ", qq.Artists)} / 专辑='{qq.Album}' / 时长={qq.DurationMs?.ToString() ?? "?"}ms / MatchType={qq.MatchType} / 综合分={score:F2}");
+                var qq = item.Candidate;
+                AppLog.Info($"QQ 候选尝试 {attempts}/{MaxAutoAttempts}: '{qq.Title}' / 分={item.Score:F2}");
 
                 var result = await LoadBySongIdAsync(qq.Id, qq.Title ?? title);
                 if (result.Status == LyricsLoadResult.Loaded)
@@ -74,7 +80,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
                 if (result.Status == LyricsLoadResult.Instrumental)
                 {
                     sawInstrumental = true;
-                    AppLog.Debug($"候选 '{qq.Title}' 无歌词（纯音乐），试下一个版本");
+                    AppLog.Info($"候选 '{qq.Title}' 无歌词（纯音乐），试下一个版本");
                     continue;
                 }
 
@@ -108,14 +114,6 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
             "Low" => 1,
             _ => 0
         };
-    }
-
-    /// <summary>候选时长与期望时长的差值（毫秒）；缺时长按 0 处理（不参与排序区分）</summary>
-    internal static int DurationDeltaMs(QQMusicSearchResult r, int? expected)
-    {
-        if (expected is null || r.DurationMs is not { } actual)
-            return 0;
-        return Math.Abs(actual - expected.Value);
     }
 
     /// <summary>歌名相似度 [0,1]：完全相等 1.0；一方包含 0.6+0.4×min/max；无关 0</summary>
@@ -343,7 +341,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
                 if (data?.Lines is not null)
                     foreach (var line in data.Lines)
                     {
-                        if (!TryGetTiming(line, out var startTime, out var text, out var endTime))
+                        if (!LyricParsing.TryGetTiming(line, out var startTime, out var text, out var endTime))
                             continue;
                         parsed.Add(new LyricLine(startTime, text, endTime, words: BuildWords(line)));
                     }
@@ -421,29 +419,6 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
         return text.Length <= 200 ? text : text[..200] + $"…（共 {text.Length} 字符）";
     }
 
-    /// <summary>安全读取一行的开始时间与文本（跳过空行、纯伴奏行等异常行）</summary>
-    private static bool TryGetTiming(ILineInfo line, out int startTime, out string text, out int? endTime)
-    {
-        startTime = 0;
-        text = string.Empty;
-        endTime = null;
-        try
-        {
-            if (!line.StartTime.HasValue)
-                return false;
-            text = line.Text;
-            if (string.IsNullOrWhiteSpace(text))
-                return false;
-            startTime = line.StartTime.Value;
-            endTime = line.EndTime;
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
     /// <summary>解析翻译文本（可能是 QRC 逐字或 LRC 逐行，两种都试），返回"开始时间 → 翻译"映射</summary>
     internal static Dictionary<int, string> BuildTranslationMap(string? transRaw)
     {
@@ -458,7 +433,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
                 var data = ParseHelper.ParseLyrics(transRaw, rawType);
                 if (data?.Lines is not null)
                     foreach (var line in data.Lines)
-                        if (TryGetTiming(line, out var start, out var text, out _) &&
+                        if (LyricParsing.TryGetTiming(line, out var start, out var text, out _) &&
                             !string.IsNullOrWhiteSpace(text) &&
                             !IsPlaceholderTranslation(text) &&
                             !map.ContainsKey(start))

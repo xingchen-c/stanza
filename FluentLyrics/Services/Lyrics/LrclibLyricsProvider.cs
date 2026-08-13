@@ -50,7 +50,7 @@ public sealed class LrclibLyricsProvider : ILyricsProvider
                 {
                     foreach (var line in data.Lines)
                     {
-                        if (!TryGetTiming(line, out var startTime, out var text, out var endTime))
+                        if (!LyricParsing.TryGetTiming(line, out var startTime, out var text, out var endTime))
                             continue;
                         parsed.Add(new LyricLine(startTime, text, endTime));
                     }
@@ -74,26 +74,4 @@ public sealed class LrclibLyricsProvider : ILyricsProvider
         }
     }
 
-    /// <summary>安全读取一行的开始/结束时间与文本（跳过空行等异常行）</summary>
-    private static bool TryGetTiming(ILineInfo line, out int startTime, out string text, out int? endTime)
-    {
-        startTime = 0;
-        text = string.Empty;
-        endTime = null;
-        try
-        {
-            if (!line.StartTime.HasValue)
-                return false;
-            text = line.Text;
-            if (string.IsNullOrWhiteSpace(text))
-                return false;
-            startTime = line.StartTime.Value;
-            endTime = line.EndTime;
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
 }
