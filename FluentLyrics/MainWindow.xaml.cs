@@ -250,6 +250,9 @@ public partial class MainWindow
             // 隐藏歌词（保留布局与滚动位置），显示歌手信息 + 控制按钮
             LyricViewport.Visibility = Visibility.Hidden;
             HoverPanel.Visibility = Visibility.Visible;
+            // 强制同步布局：否则从隐藏切到显示的瞬间 ActualWidth 仍为 0，
+            // WM_NCHITTEST 会跳过面板判定、按钮区域返回穿透（悬停/点击偶发无反馈）
+            HoverPanel.UpdateLayout();
         }
         else
         {
