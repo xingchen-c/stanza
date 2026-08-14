@@ -93,21 +93,26 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
             // 2. 多维综合打分排序后逐个取词：歌名无关的硬门槛提前过滤；
             //    跳过无歌词（纯音乐）的版本，直到找到带歌词的正确版本。
             //    全部无歌词 → 返回 Instrumental（确认真纯音乐）。
+            //    排序分两档：先按「歌手精确度」降序（同名不同歌手时，精确歌手恒优先，
+            //    避免错歌手凭时长凑巧接近反超），同档内再按综合分降序选版本，
+            //    最后保持搜索原顺序避免抖动。
             var ranked = results
                 .Where(r => TitlesRelated(r.Title ?? title, title)) // 硬门槛：歌名完全无关的不进打分
                 .Select((r, index) => (Candidate: r, Index: index, Score: ComputeMatchScore(
                     r.Title, r.Artists, r.Album, r.DurationMs, r.MatchType,
                     title, artist, durationMs)))
-                .OrderByDescending(x => x.Score)
-                .ThenBy(x => x.Index) // 同分保持搜索原顺序，避免排序抖动
+                .OrderByDescending(x => ArtistRankKey(x.Candidate.Artists, artist))
+                .ThenByDescending(x => x.Score)
+                .ThenBy(x => x.Index)
                 .ToList();
 
-            // 诊断（Info 级落盘）：偶发匹配错时需要看到完整候选分布，定位正确候选排到第几
+            // 诊断：匹配输入 Info 落盘（Release 可见）；候选分布 Debug（调试器/DEBUG 包可见，
+            // 偶发匹配错时切 Debug 打包或调试器里看完整候选分布）
             AppLog.Info($"QQ 匹配输入: '{title}' / '{artist}' / 时长={durationMs?.ToString() ?? "?"}ms，通过硬门槛候选数={ranked.Count}");
             for (var i = 0; i < Math.Min(ranked.Count, 10); i++)
             {
                 var c = ranked[i];
-                AppLog.Info($"QQ 候选[{i + 1}] 分={c.Score:F2} '{c.Candidate.Title}' / {string.Join(", ", c.Candidate.Artists)} / 专辑='{c.Candidate.Album}' / 时长={c.Candidate.DurationMs?.ToString() ?? "?"}ms / MatchType={c.Candidate.MatchType}");
+                AppLog.Debug($"QQ 候选[{i + 1}] 分={c.Score:F2} '{c.Candidate.Title}' / {string.Join(", ", c.Candidate.Artists)} / 专辑='{c.Candidate.Album}' / 时长={c.Candidate.DurationMs?.ToString() ?? "?"}ms / MatchType={c.Candidate.MatchType}");
             }
 
             var sawInstrumental = false;
@@ -118,11 +123,14 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
                     break;
 
                 var qq = item.Candidate;
-                AppLog.Info($"QQ 候选尝试 {attempts}/{MaxAutoAttempts}: '{qq.Title}' / 分={item.Score:F2}");
+                AppLog.Debug($"QQ 候选尝试 {attempts}/{MaxAutoAttempts}: '{qq.Title}' / 分={item.Score:F2}");
 
                 var result = await LoadBySongIdAsync(qq.Id, qq.Title ?? title);
                 if (result.Status == LyricsLoadResult.Loaded)
+                {
+                    AppLog.Info($"QQ 命中: '{qq.Title}' / {string.Join(", ", qq.Artists)} / 分={item.Score:F2}");
                     return result; // 找到带歌词的版本
+                }
 
                 if (result.Status == LyricsLoadResult.Instrumental)
                 {
@@ -212,6 +220,11 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
             .Where(s => s.Length > 0)
             .ToHashSet();
     }
+
+    /// <summary>候选排序主键：歌手精确度降序值（精确 1.0 &gt; 部分交集 0.6 &gt; 无交集 0.2 &gt; 缺失 0）。
+    ///     让「同名不同歌手」的错歌手不会因时长凑巧接近而反超精确歌手。</summary>
+    internal static double ArtistRankKey(string[]? candidateArtists, string? expectedArtist)
+        => ArtistScore(candidateArtists, expectedArtist) ?? 0;
 
     /// <summary>时长接近度 [0,1]：1/(1+(Δ/τ)²) 平滑衰减，不做硬截断；任一时长缺失 → null</summary>
     internal static double? DurationScore(int? candidateDurationMs, int? expectedDurationMs)

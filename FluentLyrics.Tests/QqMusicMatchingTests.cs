@@ -191,4 +191,53 @@ public class QqMusicMatchingTests
             "伴宅日记", "千月兔", 263000); // 时长分≈0
         Assert.True(WithoutDuration() > WithBadDuration());
     }
+
+    // ---- 排序主键：歌手精确度优先（同名不同歌手不串歌）----
+
+    [Fact]
+    public void ArtistRankKey_精确歌手高于部分交集高于无交集()
+    {
+        var exact = QqMusicLyricsProvider.ArtistRankKey(["ZWLJ", "国风引力"], "ZWLJ/国风引力");
+        var partial = QqMusicLyricsProvider.ArtistRankKey(["ZWLJ", "张三"], "ZWLJ/国风引力");
+        var none = QqMusicLyricsProvider.ArtistRankKey(["童译"], "ZWLJ/国风引力");
+        Assert.True(exact > partial && partial > none);
+    }
+
+    [Fact]
+    public void ArtistRankKey_期望歌手缺失时为最低档()
+    {
+        // SMTC 给不出歌手时，主键退化为 0，排序退回综合分（时长+MatchType），不误排
+        AssertClose(0, QqMusicLyricsProvider.ArtistRankKey(["许嵩"], null));
+    }
+
+    [Fact]
+    public void 同名不同歌手_时长凑巧接近也不反超精确歌手_豆蔻案例()
+    {
+        // 真实场景：SMTC 报「豆蔻 / ZWLJ/国风引力 / 235440ms」，QQ 返回两个同名候选——
+        // 正确歌手 ZWLJ/国风引力（时长差 28s）与错歌手 童译（时长差仅 1.4s）。
+        double scoreCorrect = QqMusicLyricsProvider.ComputeMatchScore(
+            "豆蔻", ["ZWLJ", "国风引力"], "豆蔻", 207000, "Medium",
+            "豆蔻", "ZWLJ/国风引力", 235440);
+        double scoreWrong = QqMusicLyricsProvider.ComputeMatchScore(
+            "豆蔻", ["童译"], "好听的BGM背景纯音乐推荐大全53", 234000, "Medium",
+            "豆蔻", "ZWLJ/国风引力", 235440);
+
+        // 旧分排序会选错（证明本修复靠的是「歌手主键」，而不是调权重掩盖）
+        Assert.True(scoreWrong > scoreCorrect);
+
+        // 新排序：主键（歌手精确度）决定顺序，正确候选恒排在错候选前
+        double rankCorrect = QqMusicLyricsProvider.ArtistRankKey(["ZWLJ", "国风引力"], "ZWLJ/国风引力");
+        double rankWrong = QqMusicLyricsProvider.ArtistRankKey(["童译"], "ZWLJ/国风引力");
+        Assert.True(rankCorrect > rankWrong);
+    }
+
+    [Fact]
+    public void 同名多版本_同歌手档内仍靠时长选版本()
+    {
+        // 同歌手（主键同为 1.0）时，时长近者综合分更高 → 选对版本（DJ/Live/伴奏）
+        double Score(int duration) => QqMusicLyricsProvider.ComputeMatchScore(
+            "长生诀", ["西瓜JUN"], null, duration, "Medium",
+            "长生诀", "西瓜JUN", 191000);
+        Assert.True(Score(191000) > Score(23000)); // 原曲 191s > 23s 片段版
+    }
 }
