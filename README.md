@@ -1,6 +1,12 @@
-# FluentLyrics
+# Stanza
 
-在 Windows 任务栏实时显示 QQ 音乐歌词的 Fluent 风格小组件。通过系统媒体会话（SMTC）监听当前播放，逐行同步歌词，支持卡拉 OK 式已播放/未播放双色进度和非中文歌的中文翻译。
+在 Windows 任务栏实时显示 QQ 音乐歌词的轻量小组件——透明、点击穿透、歌词优先。
+
+通过系统媒体会话（SMTC）监听当前播放，逐行同步歌词，支持卡拉 OK 式双色进度（已播放/未播放逐字揭晓）、非中文歌中文翻译、长歌词跟随滚动。
+
+> **Stanza**（诗的一节 / 歌词的一段）：名字取「歌词的最小结构单位」，也为后续从「歌词卡片」长成「任务栏音乐中心」留足空间。
+
+仓库：<https://gitee.com/xing-chen-d/stanza>
 
 ## 功能
 
@@ -21,21 +27,27 @@
 
 ## 安装与使用
 
-1. 从仓库 Releases 页下载最新的 zip 包并解压
-2. 运行 `FluentLyrics.exe`，歌词卡片出现在任务栏
+1. 从 [Gitee Releases](https://gitee.com/xing-chen-d/stanza/releases) 页下载最新的 zip 包并解压
+2. 运行 `Stanza.exe`，歌词卡片出现在任务栏
 3. 托盘右键菜单可「显示 / 隐藏」「设置」「退出」
 
 > 首次使用建议先播放一首歌，确认 QQ 音乐已开启 SMTC；暂停播放时卡片会自动隐藏。
 
 ## 从源码构建
 
+在仓库根目录（含 `Stanza.slnx` 的那层）执行：
+
 ```bash
-dotnet publish FluentLyrics.csproj -c Release
+# 框架依赖版（需 .NET 10 Desktop Runtime，体积小）
+dotnet publish Stanza\Stanza.csproj -c Release -o ..\dist\release
+
+# 自包含单文件版（免安装，体积约 100MB）
+dotnet publish Stanza\Stanza.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ..\dist\Stanza-0.2.0-win-x64
 ```
 
 ## 配置
 
-设置保存在 `%APPDATA%\FluentLyrics\settings.json`，删除该文件即可恢复默认设置。
+设置保存在 `%APPDATA%\Stanza\settings.json`，删除该文件即可恢复默认设置。
 
 ## 常见问题
 

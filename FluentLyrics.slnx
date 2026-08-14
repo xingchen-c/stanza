@@ -1,4 +1,0 @@
-<Solution>
-    <Project Path="FluentLyrics\FluentLyrics.csproj"/>
-    <Project Path="FluentLyrics.Tests\FluentLyrics.Tests.csproj"/>
-</Solution>

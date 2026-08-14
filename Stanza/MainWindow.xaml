@@ -1,0 +1,162 @@
+<Window x:Class="Stanza.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="Stanza"
+        Width="560" Height="48"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        ResizeMode="NoResize"
+        WindowStartupLocation="Manual"
+        Visibility="Hidden"
+        FontFamily="Segoe UI Variable, Segoe UI, Microsoft YaHei UI"
+        TextOptions.TextRenderingMode="ClearType"
+        TextOptions.TextFormattingMode="Ideal">
+    <Grid x:Name="LyricHost" ClipToBounds="True" Margin="0">
+        <Grid.Resources>
+            <!-- 播放控制按钮：Segoe MDL2 Assets 图标，透明底，悬停微亮 -->
+            <Style x:Key="MediaButton" TargetType="Button">
+                <Setter Property="Width" Value="26" />
+                <Setter Property="Height" Value="26" />
+                <Setter Property="Margin" Value="1,0" />
+                <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
+                <Setter Property="FontSize" Value="14" />
+                <Setter Property="Foreground" Value="White" />
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Cursor" Value="Hand" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="4">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="bd" Property="Background" Value="#0FFFFFFF" />
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="bd" Property="Background" Value="#14FFFFFF" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+        </Grid.Resources>
+
+        <Canvas>
+            <!-- 双层歌词 + 翻译：暗色全文垫底，亮色层用 Clip 矩形按进度揭开（卡拉OK式）。
+                 不用 LinearGradientBrush 文本前景：WPF 会按字形段（字体回退拆段）分别映射相对渐变，
+                 一行里出现多条白/灰边界，字被劈开像重影。翻译固定暗色显示在正词下方（非中文歌时） -->
+            <!-- 歌词视口：限定在封面与按钮之间，超出部分裁剪，避免歌词滚到控制按钮下面。
+                 必须用 Canvas：Border 会约束子元素布局尺寸（歌词宽度被压扁），Canvas 不约束。 -->
+            <Canvas x:Name="LyricViewport" ClipToBounds="True">
+                <StackPanel x:Name="LyricStack" Orientation="Vertical">
+                    <StackPanel.RenderTransform>
+                        <TranslateTransform x:Name="LyricTranslate" />
+                    </StackPanel.RenderTransform>
+                    <Grid x:Name="LyricContent">
+                        <!-- 偏移伪阴影：黑色文本右下偏移 1px，代替 GPU blur 的 DropShadowEffect，
+                             避免 Win10 分层窗口/软件渲染下阴影糊成黑块 -->
+                        <TextBlock x:Name="LyricTextShadow"
+                                   FontSize="15"
+                                   Foreground="#80000000"
+                                   TextWrapping="NoWrap">
+                            <TextBlock.RenderTransform>
+                                <TranslateTransform X="1" Y="1" />
+                            </TextBlock.RenderTransform>
+                        </TextBlock>
+                        <TextBlock x:Name="LyricTextDim"
+                                   FontSize="15"
+                                   Foreground="#6EFFFFFF"
+                                   TextWrapping="NoWrap" />
+                        <TextBlock x:Name="LyricTextBright"
+                                   FontSize="15"
+                                   Foreground="White"
+                                   Text="Stanza 正在启动…"
+                                   TextWrapping="NoWrap" />
+                    </Grid>
+                    <Grid x:Name="LyricTranslationHost" Visibility="Collapsed">
+                        <TextBlock x:Name="LyricTranslationShadow"
+                                   FontSize="12"
+                                   Foreground="#66000000"
+                                   TextWrapping="NoWrap">
+                            <TextBlock.RenderTransform>
+                                <TranslateTransform X="1" Y="1" />
+                            </TextBlock.RenderTransform>
+                        </TextBlock>
+                        <TextBlock x:Name="LyricTranslation"
+                                   FontSize="12"
+                                   Foreground="#8EFFFFFF"
+                                   TextWrapping="NoWrap" />
+                    </Grid>
+                </StackPanel>
+            </Canvas>
+        </Canvas>
+
+        <!-- 媒体区：封面（左）常显；悬停面板（歌名/歌手 + 控制按钮）鼠标悬停在卡片上时显示 -->
+        <Border x:Name="CoverBorder"
+                Width="36" Height="36"
+                Margin="8,0,0,0"
+                HorizontalAlignment="Left" VerticalAlignment="Center"
+                CornerRadius="4"
+                Background="#22000000"
+                Visibility="Collapsed">
+            <!-- OpacityMask 用圆角矩形裁剪：Border.CornerRadius 不会裁剪子元素，Image 会直角铺满盖住圆角 -->
+            <Border.OpacityMask>
+                <VisualBrush Stretch="Fill">
+                    <VisualBrush.Visual>
+                        <Rectangle RadiusX="4" RadiusY="4" Width="36" Height="36" Fill="White" />
+                    </VisualBrush.Visual>
+                </VisualBrush>
+            </Border.OpacityMask>
+            <!-- 封面位常驻：无封面时显示音符占位，有封面时图覆盖占位（避免切歌时封面消失→出现的跳跃） -->
+            <Grid>
+                <TextBlock Text="&#xE8D6;"
+                           FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                           FontSize="14"
+                           Foreground="#66FFFFFF"
+                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                <Image x:Name="CoverImage" Stretch="UniformToFill" />
+            </Grid>
+        </Border>
+
+        <!-- 悬停面板：按钮贴封面，歌名/歌手在右侧上下两行；半透明深色圆角底代替发光阴影，保证浅色任务栏可读 -->
+        <Border x:Name="HoverPanel"
+                HorizontalAlignment="Right" VerticalAlignment="Center"
+                Margin="0,0,6,0"
+                Padding="6,4,10,4"
+                CornerRadius="8"
+                Background="#66000000"
+                Visibility="Collapsed">
+            <StackPanel Orientation="Horizontal">
+                <StackPanel Orientation="Horizontal">
+                    <Button x:Name="PrevButton" Content="&#xE892;" Click="OnPrevClick" Style="{StaticResource MediaButton}" />
+                    <Button x:Name="PlayPauseButton" Content="&#xE768;" Click="OnPlayPauseClick" Style="{StaticResource MediaButton}" />
+                    <Button x:Name="NextButton" Content="&#xE893;" Click="OnNextClick" Style="{StaticResource MediaButton}" />
+                    <Button x:Name="SwitchVersionButton" Content="&#xE8AB;" Click="OnSwitchVersionClick"
+                            Style="{StaticResource MediaButton}" ToolTip="换歌词版本" />
+                </StackPanel>
+                <StackPanel Orientation="Vertical" Margin="12,0,0,0" VerticalAlignment="Center">
+                    <TextBlock x:Name="TrackTitleText"
+                               FontSize="12" FontWeight="SemiBold"
+                               Foreground="White"
+                               TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                               MaxWidth="120" />
+                    <TextBlock x:Name="TrackArtistText"
+                               FontSize="10"
+                               Foreground="#BFFFFFFF"
+                               TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                               MaxWidth="120" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>
