@@ -27,6 +27,33 @@ public class QqMusicMatchingTests
         Assert.Equal(expected, QqMusicLyricsProvider.TitlesRelated(lyricsTitle, expectedTitle));
     }
 
+    // ---- 标题前缀清洗 ----
+
+    [Theory]
+    [InlineData("【盗墓笔记】见闻山海", "见闻山海")]     // 全角方括号前缀
+    [InlineData("[盗墓笔记]见闻山海", "见闻山海")]       // 半角方括号前缀
+    [InlineData("【盗墓笔记】见闻山海 (剧情版)", "见闻山海 (剧情版)")] // 只去前缀、保留后缀
+    [InlineData("见闻山海", null)]                       // 无前缀
+    [InlineData("【】", null)]                            // 前缀为空
+    [InlineData("（盗墓笔记）见闻山海", null)]           // 圆括号开头不算方括号前缀
+    public void StripLeadingBracket_去掉开头方括号前缀(string title, string? expected)
+    {
+        Assert.Equal(expected, QqMusicLyricsProvider.StripLeadingBracket(title));
+    }
+
+    // ---- 群星歌手截断 ----
+
+    [Theory]
+    [InlineData(null, 2, null)]
+    [InlineData("", 2, "")]
+    [InlineData("司夏", 2, "司夏")]                          // 单歌手原样
+    [InlineData("蔡明希-不才/云之泣/银临/Aki阿杰", 2, "蔡明希-不才/云之泣")] // 多歌手截到前两位
+    [InlineData("李常超（Lao乾妈）/音频怪物/张承煜（小魂）", 2, "李常超（Lao乾妈）/音频怪物")]
+    public void ShortenArtists_群星歌手截到前N位(string? artist, int maxCount, string? expected)
+    {
+        Assert.Equal(expected, QqMusicLyricsProvider.ShortenArtists(artist, maxCount));
+    }
+
     // ---- 匹配度排序权重 ----
 
     [Theory]

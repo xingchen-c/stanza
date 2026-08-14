@@ -23,9 +23,9 @@ public sealed class LyricsService
         public long LastUsedUnixMs;
     }
 
-    /// <summary>默认歌词源：QQ 音乐优先，LRCLIB 兜底</summary>
+    /// <summary>默认歌词源：QQ 音乐优先，网易云次之，LRCLIB 最后兜底</summary>
     public LyricsService()
-        : this(new QqMusicLyricsProvider(), new LrclibLyricsProvider())
+        : this(new QqMusicLyricsProvider(), new NeteaseLyricsProvider(), new LrclibLyricsProvider())
     {
     }
 

@@ -1,0 +1,206 @@
+using Lyricify.Lyrics.Helpers;
+using Lyricify.Lyrics.Models;
+using Lyricify.Lyrics.Searchers;
+using Stanza.Models;
+
+namespace Stanza.Services.Lyrics;
+
+/// <summary>网易云音乐歌词源（兜底）：搜索 → 取 Yrc/Lrc → 解析成带时间轴的行（Yrc 含逐字）</summary>
+public sealed class NeteaseLyricsProvider : ILyricsProvider
+{
+    /// <summary>自动匹配最多尝试的候选数（兜底源，别太贪，避免拖慢整条加载链）</summary>
+    private const int MaxAutoAttempts = 3;
+
+    public string Key => "NetEase";
+
+    public string Name => "网易云音乐";
+
+    public async Task<LyricsResult> LoadAsync(string title, string artist, int? durationMs)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+            return new LyricsResult(LyricsLoadResult.NotFound, []);
+
+        try
+        {
+            var results = await SearchAsync(title, artist, durationMs);
+            if (results.Count == 0)
+                return new LyricsResult(LyricsLoadResult.NotFound, []);
+
+            // 复用 QQ 那套「歌名硬门槛 + 歌手精确优先 + 综合打分」，保证各源匹配策略一致
+            var ranked = results
+                .Where(r => QqMusicLyricsProvider.TitlesRelated(r.Title ?? title, title))
+                .Select((r, index) => (Candidate: r, Index: index, Score: QqMusicLyricsProvider.ComputeMatchScore(
+                    r.Title, r.Artists, r.Album, r.DurationMs, r.MatchType,
+                    title, artist, durationMs)))
+                .OrderByDescending(x => QqMusicLyricsProvider.ArtistRankKey(x.Candidate.Artists, artist))
+                .ThenByDescending(x => x.Score)
+                .ThenBy(x => x.Index)
+                .ToList();
+
+            var sawInstrumental = false;
+            var attempts = 0;
+            foreach (var item in ranked)
+            {
+                if (++attempts > MaxAutoAttempts)
+                    break;
+
+                var result = await LoadByIdAsync(item.Candidate.Id, item.Candidate.Title ?? title);
+                if (result.Status == LyricsLoadResult.Loaded)
+                {
+                    AppLog.Info($"网易云命中: '{item.Candidate.Title}' / {string.Join(", ", item.Candidate.Artists)} / 分={item.Score:F2}");
+                    return result;
+                }
+
+                if (result.Status == LyricsLoadResult.Instrumental)
+                    sawInstrumental = true;
+            }
+
+            return new LyricsResult(
+                sawInstrumental ? LyricsLoadResult.Instrumental : LyricsLoadResult.NotFound,
+                []);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error($"网易云搜索/取词失败: {ex.Message}");
+            return new LyricsResult(LyricsLoadResult.NotFound, []);
+        }
+    }
+
+    public async Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(string title, string artist, int? durationMs)
+    {
+        try
+        {
+            var results = await SearchAsync(title, artist, durationMs);
+            return results
+                .Select(r => new LyricCandidate(
+                    Key,
+                    Name,
+                    r.Id,
+                    r.Title ?? title,
+                    r.Artists is { Length: > 0 } ? string.Join(", ", r.Artists) : artist,
+                    r.Album,
+                    r.DurationMs,
+                    r.MatchType?.ToString()))
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error($"网易云搜索候选失败: {ex.Message}");
+            return [];
+        }
+    }
+
+    /// <summary>按用户选中的候选直接取歌词（跳过搜索匹配）</summary>
+    public Task<LyricsResult> LoadCandidateAsync(LyricCandidate candidate)
+    {
+        return LoadByIdAsync(candidate.Id, candidate.Title);
+    }
+
+    /// <summary>网易云搜索：返回候选列表</summary>
+    private static async Task<List<NeteaseSearchResult>> SearchAsync(string title, string artist, int? durationMs)
+    {
+        var metadata = new TrackMetadata { Title = title, Artist = artist, DurationMs = durationMs };
+        var results = await SearcherHelper.NeteaseSearcher.SearchForResults(metadata);
+        return (results ?? []).OfType<NeteaseSearchResult>().ToList();
+    }
+
+    /// <summary>按歌曲 ID 取词并解析：Yrc（逐字）优先，无 Yrc 回退 Lrc；翻译按时间对齐</summary>
+    private async Task<LyricsResult> LoadByIdAsync(string id, string titleForLog)
+    {
+        try
+        {
+            var lyric = await ProviderHelper.NeteaseApi.GetLyric(id);
+            if (lyric is null)
+                return new LyricsResult(LyricsLoadResult.NotFound, []);
+
+            // 官方纯音乐标记
+            if (lyric.Nolyric)
+                return new LyricsResult(LyricsLoadResult.Instrumental, []);
+
+            // 翻译：Tlyric（逐行）优先，Ytlrc（逐字）兜底；复用 QQ 的 LRC 翻译解析
+            var translationMap = QqMusicLyricsProvider.BuildTranslationMap(
+                lyric.Tlyric?.Lyric ?? lyric.Ytlrc?.Lyric);
+
+            var parsed = ParseTimedLines(lyric.Yrc?.Lyric, lyric.Lrc?.Lyric, translationMap);
+            if (parsed.Count > 0)
+                return new LyricsResult(LyricsLoadResult.Loaded, parsed);
+
+            // 有歌词原文但解析不出时间轴 → 可能是未知格式，交给下一个源，不误判纯音乐
+            var hasRaw = !string.IsNullOrWhiteSpace(lyric.Lrc?.Lyric) ||
+                         !string.IsNullOrWhiteSpace(lyric.Yrc?.Lyric);
+            return new LyricsResult(
+                hasRaw ? LyricsLoadResult.NotFound : LyricsLoadResult.Instrumental,
+                []);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error($"网易云取词失败: {ex.Message}");
+            return new LyricsResult(LyricsLoadResult.NotFound, []);
+        }
+    }
+
+    /// <summary>解析网易云歌词：Yrc（逐字）优先，回退 Lrc；翻译按开始时间对齐挂到行上</summary>
+    private static List<LyricLine> ParseTimedLines(
+        string? yrcLyric, string? lrcLyric, Dictionary<int, string> translationMap)
+    {
+        if (!string.IsNullOrWhiteSpace(yrcLyric))
+        {
+            var lines = ParseRaw(yrcLyric, LyricsRawTypes.Yrc);
+            if (lines.Count > 0)
+                return AttachTranslation(lines, translationMap);
+        }
+
+        if (!string.IsNullOrWhiteSpace(lrcLyric))
+        {
+            var lines = ParseRaw(lrcLyric, LyricsRawTypes.Lrc);
+            if (lines.Count > 0)
+                return AttachTranslation(lines, translationMap);
+        }
+
+        return [];
+    }
+
+    /// <summary>按给定格式解析歌词原文，返回带时间轴的行（已排序）；解析失败返回空</summary>
+    private static List<LyricLine> ParseRaw(string raw, LyricsRawTypes rawType)
+    {
+        var parsed = new List<LyricLine>();
+        try
+        {
+            var data = ParseHelper.ParseLyrics(raw, rawType);
+            if (data?.Lines is null)
+                return parsed;
+
+            foreach (var line in data.Lines)
+            {
+                if (!LyricParsing.TryGetTiming(line, out var startTime, out var text, out var endTime))
+                    continue;
+                parsed.Add(new LyricLine(startTime, text, endTime, words: LyricParsing.BuildWords(line)));
+            }
+
+            parsed.Sort((a, b) => a.StartTime.CompareTo(b.StartTime));
+        }
+        catch
+        {
+            // 该格式解析失败就回退另一种
+        }
+
+        return parsed;
+    }
+
+    /// <summary>翻译按时间对齐：行数 1:1 按序挂，否则按时间容差匹配（与 QQ 一致）</summary>
+    private static List<LyricLine> AttachTranslation(List<LyricLine> lines, Dictionary<int, string> translationMap)
+    {
+        if (translationMap.Count == 0)
+            return lines;
+
+        var transLines = translationMap.OrderBy(kv => kv.Key).Select(kv => kv.Value).ToList();
+        return lines.Select((l, i) => new LyricLine(
+            l.StartTime,
+            l.Text,
+            l.EndTime,
+            transLines.Count == lines.Count
+                ? transLines[i]
+                : QqMusicLyricsProvider.MatchByTime(l.StartTime, translationMap),
+            l.Words)).ToList();
+    }
+}

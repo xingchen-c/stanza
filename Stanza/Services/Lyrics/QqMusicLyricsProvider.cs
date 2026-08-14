@@ -24,22 +24,27 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
     public string Name => "QQ 音乐";
 
     /// <summary>
-    ///     搜索候选：SMTC 标题常带 "(中文翻译)" 这类括号副标题，完整标题搜不到时，
-    ///     去掉尾部括号副标题再搜一次作为兜底（QQ 搜索可能被脏标题卡住）。
+    ///     搜索候选：SMTC 标题常带「【前缀】」「(版本后缀)」等脏标记，完整标题搜不到时
+    ///     逐级去掉再搜（如【盗墓笔记】见闻山海 (剧情版) → 见闻山海），避免 QQ 搜索被卡住。
     /// </summary>
     private static async Task<IReadOnlyList<QQMusicSearchResult>> SearchWithTitleFallbackAsync(
         string title, string artist, int? durationMs)
     {
         var variants = new List<string> { title };
-        var cleaned = StripTrailingParenthetical(title);
-        if (cleaned is not null && !string.Equals(cleaned, title, StringComparison.Ordinal))
-            variants.Add(cleaned);
+        AddIfDistinct(variants, StripTrailingParenthetical(title));
+        AddIfDistinct(variants, StripLeadingBracket(title));
+        // 同时去掉前后缀（如【盗墓笔记】见闻山海 (剧情版) → 见闻山海）
+        AddIfDistinct(variants, StripTrailingParenthetical(StripLeadingBracket(title) ?? title));
+
+        // 群星类歌曲（几十位歌手）整串歌手名会拖垮搜索，只取前两位作搜索提示；
+        // 完整歌手串仍用于后续综合打分（按分隔符求交集），不影响匹配准确率。
+        var searchArtist = ShortenArtists(artist, 2);
 
         foreach (var variant in variants)
         {
             try
             {
-                var metadata = new TrackMetadata { Title = variant, Artist = artist, DurationMs = durationMs };
+                var metadata = new TrackMetadata { Title = variant, Artist = searchArtist, DurationMs = durationMs };
                 var results = await SearcherHelper.QQMusicSearcher.SearchForResults(metadata);
                 var candidates = (results ?? []).OfType<QQMusicSearchResult>().ToList();
                 if (candidates.Count > 0)
@@ -55,7 +60,30 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
             }
         }
 
+        // 所有变体都搜不到：打一条汇总，方便定位「脏标题 + 群星歌手」这类搜索被卡死的模式
+        AppLog.Info($"QQ 搜索无结果: '{title}' 歌手长={artist?.Length ?? 0} 尝试标题=[{string.Join(" → ", variants)}]");
         return [];
+    }
+
+    /// <summary>向标题变体列表追加一个非空且不重复的清洗结果</summary>
+    private static void AddIfDistinct(List<string> variants, string? cleaned)
+    {
+        if (cleaned is not null && !variants.Any(v => string.Equals(v, cleaned, StringComparison.Ordinal)))
+            variants.Add(cleaned);
+    }
+
+    /// <summary>群星歌的歌手串可能几十位，搜索时只保留前 N 位（完整串仍用于打分）；短串原样返回</summary>
+    internal static string? ShortenArtists(string? artist, int maxCount)
+    {
+        if (string.IsNullOrWhiteSpace(artist))
+            return artist;
+
+        var parts = artist
+            .Split(['/', ',', '、'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .Where(s => s.Length > 0)
+            .ToArray();
+        return parts.Length <= maxCount ? artist : string.Join("/", parts.Take(maxCount));
     }
 
     /// <summary>去掉标题尾部的括号副标题（半角/全角圆括号），返回清洗后的标题；无括号或只剩空白返回 null</summary>
@@ -76,6 +104,22 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
         }
 
         return null;
+    }
+
+    /// <summary>去掉标题开头的方括号前缀（【...】/[...]，如【盗墓笔记】见闻山海），返回核心歌名；无前缀返回 null</summary>
+    internal static string? StripLeadingBracket(string title)
+    {
+        var trimmed = title.Trim();
+        if (trimmed.Length < 3 || trimmed[0] is not ('【' or '['))
+            return null;
+
+        var close = trimmed[0] == '【' ? '】' : ']';
+        var closeIdx = trimmed.IndexOf(close, 1);
+        if (closeIdx < 0)
+            return null;
+
+        var tail = trimmed[(closeIdx + 1)..].TrimStart();
+        return tail.Length > 0 ? tail : null;
     }
 
     public async Task<LyricsResult> LoadAsync(string title, string artist, int? durationMs)
@@ -401,7 +445,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
                     {
                         if (!LyricParsing.TryGetTiming(line, out var startTime, out var text, out var endTime))
                             continue;
-                        parsed.Add(new LyricLine(startTime, text, endTime, words: BuildWords(line)));
+                        parsed.Add(new LyricLine(startTime, text, endTime, words: LyricParsing.BuildWords(line)));
                     }
 
                 parsed.Sort((a, b) => a.StartTime.CompareTo(b.StartTime));
@@ -428,25 +472,6 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
     internal static string Normalize(string s)
     {
         return string.Concat(s.Where(ch => !char.IsWhiteSpace(ch))).ToLowerInvariant();
-    }
-
-    /// <summary>从 SyllableLineInfo 提取逐字时间戳；普通行（无逐字数据）返回 null</summary>
-    private static List<LyricWord>? BuildWords(ILineInfo line)
-    {
-        if (line is not SyllableLineInfo syllable ||
-            !syllable.IsSyllable ||
-            syllable.Syllables is not { Count: > 0 } syllables)
-            return null;
-
-        var words = new List<LyricWord>(syllables.Count);
-        foreach (var s in syllables)
-        {
-            if (string.IsNullOrEmpty(s.Text) || s.EndTime <= s.StartTime)
-                continue;
-            words.Add(new LyricWord(s.Text, s.StartTime, s.EndTime));
-        }
-
-        return words.Count > 0 ? words : null;
     }
 
     /// <summary>原文是否带时间戳标记（[mm:ss] 等），用于区分"解析失败"与"纯音乐占位文案"</summary>
