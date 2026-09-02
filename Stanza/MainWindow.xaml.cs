@@ -52,9 +52,6 @@ public partial class MainWindow
     private int _lastFullscreenDiagTick = -5000; // 全屏检测诊断日志节流
     private double _lastClipWidth = -1; // 上次裁剪宽度（逐字/线性共用去重）
     private double _animatedClipWidth = -1; // 卡拉OK亮色边界当前显示宽度（平滑趋近目标，渐入渐出）
-    private long _lastPlayingSnapshotUtcMs; // 最后一次播放中的快照时刻（暂停动量：判断是否有更新的暂停快照）
-    private int _lastPlayingPositionMs = -1; // 最后一次播放中的外推位置（暂停时对齐实际停止点）
-    private int _pausedDisplayPositionMs = -1; // 暂停时冻结的显示位置（-1 = 播放中/未暂停）
     private double _lastProgress = -1; // 上次渲染的进度（0~1）
     private Brush _lyricBrush = Brushes.White; // 状态文本/亮色层画刷
     private Color _lyricColor = Colors.White;
@@ -62,6 +59,18 @@ public partial class MainWindow
     private Color _lyricDimColor = Color.FromArgb(110, 255, 255, 255);
     private string _reapplyDiagSig = string.Empty; // 布局诊断签名（仅变化时打印，防刷屏）
     private bool? _lastRenderDowngraded; // 渲染降级上次状态（日志按变化打印 Info，其余 Debug）
+
+    /// <summary>播放位置真相机：时序状态与切歌闸门全部收口于此（M2 位置真相收敛的第一步）</summary>
+    private readonly PlaybackPositionTracker _positionTracker = new();
+
+    /// <summary>渲染跳过原因的上次值（同一原因连续跳过不重复打日志）</summary>
+    private string? _lastSkipReason;
+
+    /// <summary>位置采样诊断的节流（2 秒）</summary>
+    private int _lastPositionSampleLogMs;
+
+    /// <summary>Tracker 视角的上次播放状态（过滤 PlaybackStatusChanged 的重复推送）</summary>
+    private GlobalSystemMediaTransportControlsSessionPlaybackStatus? _lastTrackerStatus;
 
     // ---- 运行时设置（来自 AppSettings）----
     private AppSettings _settings = AppSettingsService.Load();
@@ -79,6 +88,7 @@ public partial class MainWindow
         _clickThrough = _settings.ClickThrough;
         _showMediaControls = _settings.ShowMediaControls;
         ApplyLyricBrushes();
+        AppLog.ApplyLevel(_settings.LogLevel);
         _smtc.SetMediaControlsEnabled(_showMediaControls);
 
         // 订阅 SMTC 服务事件：状态/歌词/封面变化 → 刷新 UI
@@ -150,9 +160,10 @@ public partial class MainWindow
         _currentIndex = -1;
         _lastProgress = -1;
         _animatedClipWidth = -1;
-        _lastPlayingPositionMs = -1;
-        _pausedDisplayPositionMs = -1;
-        _lastPlayingSnapshotUtcMs = 0;
+
+        // 会话断开/重连：位置合成与闸门状态全部复位
+        _positionTracker.Reset();
+
         CoverImage.Source = null;
         // 封面位常驻：会话接入时显示占位（无封面显示音符），断开时收起
         CoverBorder.Visibility = connected && _showMediaControls ? Visibility.Visible : Visibility.Collapsed;
@@ -181,9 +192,7 @@ public partial class MainWindow
         _currentIndex = -1;
         _lastProgress = -1;
         _animatedClipWidth = -1;
-        _lastPlayingPositionMs = -1;
-        _pausedDisplayPositionMs = -1;
-        _lastPlayingSnapshotUtcMs = 0;
+        _positionTracker.OnTrackSwitch(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         _wordBoundaryCache.Clear(); // 上一首歌的逐字宽度缓存作废（常驻工具防无界增长）
     }
 
@@ -202,6 +211,13 @@ public partial class MainWindow
             ? "\uE769"
             : "\uE768";
         PositionCard();
+        // Tracker 只关心"非播放→播放"的真实跳变（SMTC 允许重复推送同一状态）
+        if (!status.HasValue) return;
+        if (status.Value == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing &&
+            _lastTrackerStatus.HasValue &&
+            _lastTrackerStatus.Value != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+            _positionTracker.OnResumeBoundary(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        _lastTrackerStatus = status.Value;
     }
 
     /// <summary>封面就绪/变化：更新封面显示并重算歌词布局（null = 无封面/失败）</summary>
@@ -226,6 +242,7 @@ public partial class MainWindow
             CoverImage.BeginAnimation(UIElement.OpacityProperty, null);
             CoverImage.Opacity = 1;
         }
+
         ReapplyLyricDisplay();
     }
 
@@ -681,6 +698,7 @@ public partial class MainWindow
         {
             saved = true;
             _settings = AppSettingsService.Load();
+            AppLog.ApplyLevel(_settings.LogLevel); // 日志级别改了即时生效（以后设置窗口加这个选项就不用重启）
             ApplySettings();
         };
         window.ShowDialog();
@@ -961,31 +979,50 @@ public partial class MainWindow
 
         GlobalSystemMediaTransportControlsSessionTimelineProperties? timeline;
         int rawPositionMs;
-        int positionMs;
+        bool isPlaying;
         try
         {
             timeline = _smtc.GetTimeline();
             if (timeline is null)
                 return;
             rawPositionMs = (int)timeline.Position.TotalMilliseconds;
-            positionMs = GetPositionMs(timeline, session);
+            isPlaying = session.GetPlaybackInfo().PlaybackStatus ==
+                        GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
         }
         catch
         {
             return;
         }
 
-        // SMTC 的 Position 是"LastUpdatedTime 时刻"的快照：切歌刚完成时它可能还停留在
-        // 切歌前的位置，用它匹配新歌词会闪出错位行。快照时间早于切歌开始 → 先不渲染，等新快照。
-        if (_smtc.LastSwitchStartUtcMs > 0 &&
-            timeline.LastUpdatedTime.ToUnixTimeMilliseconds() < _smtc.LastSwitchStartUtcMs)
-            return;
+        var nowUtcMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var sample = _positionTracker.Sample(
+            rawPositionMs, timeline.LastUpdatedTime.ToUnixTimeMilliseconds(), isPlaying, nowUtcMs);
 
-        // 切歌后位置毛刺：LastUpdatedTime 已更新但 Position 可能还没归零（残留上一首歌的值），
-        // 此时按旧位置渲染会让卡拉OK先滚一截再回退。切歌后 2s 内位置 >10s 视为毛刺，跳过本轮。
-        if (rawPositionMs > 10000 &&
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _smtc.LastSwitchStartUtcMs < 2000)
+        // 位置链路常驻诊断（Debug 级，2s 节流）：观察各播放器快照行为差异的仪器
+        if (Environment.TickCount - _lastPositionSampleLogMs > 2000)
+        {
+            _lastPositionSampleLogMs = Environment.TickCount;
+            AppLog.Debug("位置采样: 原始={RawMs}ms 计算={ComputedMs}ms 快照距今={AgeMs}ms 状态={Status} 决策={Decision}",
+                rawPositionMs, sample.PositionMs, nowUtcMs - timeline.LastUpdatedTime.ToUnixTimeMilliseconds(),
+                isPlaying ? "Playing" : "Paused", sample.ShouldRender ? "渲染" : sample.SkipReason);
+        }
+
+        // 渲染闸门（旧快照窗口 / 位置毛刺）已由 Tracker 收口，跳过原因变化时打一条
+        if (!sample.ShouldRender)
+        {
+            if (sample.SkipReason != _lastSkipReason)
+            {
+                _lastSkipReason = sample.SkipReason;
+                AppLog.Debug("渲染跳过: {Reason}", sample.SkipReason);
+            }
+
             return;
+        }
+
+        _lastSkipReason = null;
+
+        // 全局歌词偏移（用户偏好，渲染层叠加，不属于位置真相）：正数 = 歌词提前显示
+        var positionMs = Math.Max(0, sample.PositionMs + _settings.LyricOffsetMs);
 
         // 切歌状态机（位置回退检测、误判恢复、看门狗）统一由服务管理
         _smtc.NotifyPlaybackPosition(rawPositionMs);

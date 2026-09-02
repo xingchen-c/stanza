@@ -303,85 +303,6 @@ public partial class MainWindow
             : 0;
     }
 
-    /// <summary>
-    ///     计算当前播放位置（毫秒）。
-    ///     SMTC 的 Position 是"上次更新时刻"的快照，QQ 音乐约每秒才推送一次，
-    ///     直接使用会导致歌词切换滞后；这里用 LastUpdatedTime 外推到当前时刻。
-    /// </summary>
-    private int GetPositionMs(
-        GlobalSystemMediaTransportControlsSessionTimelineProperties timeline,
-        GlobalSystemMediaTransportControlsSession session)
-    {
-        var position = timeline.Position;
-        var snapshotUtcMs = timeline.LastUpdatedTime.ToUnixTimeMilliseconds();
-
-        if (session.GetPlaybackInfo().PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
-        {
-            _pausedDisplayPositionMs = -1; // 恢复播放：解除暂停冻结
-            var elapsed = DateTimeOffset.Now - timeline.LastUpdatedTime;
-            // 外推只在快照足够新且不早于"最近一次恢复播放"时进行：
-            // 暂停/停止期间 LastUpdatedTime 停更，恢复瞬间用旧快照外推会把暂停时长当播放时长，
-            // 导致卡拉OK线先假跳、再被新快照拉回（来回跳两下）。
-            if (elapsed > TimeSpan.Zero && elapsed < TimeSpan.FromSeconds(2) && snapshotUtcMs >= _smtc.ResumeBoundaryUtcMs)
-            {
-                position += elapsed;
-            }
-            else if (snapshotUtcMs < _smtc.ResumeBoundaryUtcMs && _lastPlayingPositionMs >= 0)
-            {
-                // 恢复瞬间还在用暂停前的旧快照：从"暂停时估算的实际停止点"继续推进，
-                // 把 QQ 那种"暂停时往前跳一下"留在暂停时刻，而不是恢复后硬跳一截。
-                var sinceResumeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _smtc.ResumeBoundaryUtcMs;
-                if (sinceResumeMs > 0)
-                    position = TimeSpan.FromMilliseconds(_lastPlayingPositionMs + sinceResumeMs);
-            }
-            _lastPlayingSnapshotUtcMs = snapshotUtcMs;
-            _lastPlayingPositionMs = (int)position.TotalMilliseconds;
-        }
-        else
-        {
-            // 暂停/停止：暂停瞬间立即对齐到最后外推位置（≈音频实际停止点，完成"往前跳一下"），
-            // 之后冻结显示——QQ 迟到的"最终位置"快照不再触发第二次跳变（否则会有
-            // "停住 → 过一会 → 再往前走一段"的诡异感）；只接受明显的拖动进度条（大跳变）。
-            if (_pausedDisplayPositionMs < 0)
-            {
-                // 暂停瞬间：若 QQ 已推送最终位置快照（快照比最后播放时更新）则直接用它，
-                // 否则用最后外推位置（≈实际停止点）——两者都不会造成"停住→再跳"的二次跳变。
-                var finalPositionArrived = snapshotUtcMs > _lastPlayingSnapshotUtcMs;
-                _pausedDisplayPositionMs = finalPositionArrived
-                    ? (int)timeline.Position.TotalMilliseconds
-                    : _lastPlayingPositionMs >= 0
-                        ? _lastPlayingPositionMs
-                        : (int)timeline.Position.TotalMilliseconds;
-                _lastPlayingSnapshotUtcMs = snapshotUtcMs;
-                position = TimeSpan.FromMilliseconds(_pausedDisplayPositionMs);
-            }
-            else if (snapshotUtcMs > _lastPlayingSnapshotUtcMs)
-            {
-                var seekDelta = Math.Abs((int)timeline.Position.TotalMilliseconds - _pausedDisplayPositionMs);
-                if (seekDelta > PauseSeekThresholdMs)
-                {
-                    // 暂停中拖动进度条：接受新位置（恢复播放时从这里继续）
-                    _pausedDisplayPositionMs = (int)timeline.Position.TotalMilliseconds;
-                    _lastPlayingPositionMs = _pausedDisplayPositionMs;
-                    _lastPlayingSnapshotUtcMs = snapshotUtcMs;
-                }
-                position = TimeSpan.FromMilliseconds(_pausedDisplayPositionMs);
-            }
-            else
-            {
-                position = TimeSpan.FromMilliseconds(_pausedDisplayPositionMs);
-            }
-        }
-
-        // 全局歌词偏移：正数 = 歌词提前显示
-        position += TimeSpan.FromMilliseconds(_settings.LyricOffsetMs);
-
-        if (position < TimeSpan.Zero)
-            position = TimeSpan.Zero;
-
-        return (int)position.TotalMilliseconds;
-    }
-
     private void SetStatus(string text)
     {
         Dispatcher.Invoke(() => UpdateLyricDisplay(text));
@@ -423,7 +344,7 @@ public partial class MainWindow
             ? CoverBorder.ActualWidth + 6 /* 左边距 */ + 8 /* 与歌词间距 */
             : 0;
         // 控制按钮移入悬停面板后不再常驻占位：歌词可用宽度 = 全宽 - 封面
-        var controlsWidth = 0;
+        const int controlsWidth = 0;
         _textBaseLeft = coverWidth;
         var availableWidth = Math.Max(0, hostWidth - _textBaseLeft - controlsWidth);
 

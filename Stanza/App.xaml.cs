@@ -49,6 +49,7 @@ public partial class App
         }
 
         AppLog.Info("应用退出");
+        AppLog.Flush(); // 冲刷异步缓冲，确保最后一行落盘
         base.OnExit(e);
     }
 

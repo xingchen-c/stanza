@@ -1,5 +1,8 @@
 using System.IO;
 using System.Text;
+using Serilog;
+using Serilog.Core;
+using Serilog.Events;
 
 namespace Stanza.Services;
 
@@ -11,11 +14,44 @@ namespace Stanza.Services;
 public static class AppLog
 {
     /// <summary>日志级别：低于该级别的日志不写文件（调试器输出始终保留）</summary>
+    private static readonly LoggingLevelSwitch LevelSwitch = new(
 #if DEBUG
-    public static LogLevel MinimumLevel { get; set; } = LogLevel.Debug;
+        LogEventLevel.Debug
 #else
-    public static LogLevel MinimumLevel { get; set; } = LogLevel.Info;
+        LogEventLevel.Information
 #endif
+    );
+    
+    /// <summary>按字符串设置日志级别（设置加载后调用；无法识别的值按 Info 处理）</summary>
+    public static void ApplyLevel(string? level)
+    {
+        MinimumLevel = level?.Trim().ToLowerInvariant() switch
+        {
+            "debug" => LogLevel.Debug,
+            "warn" => LogLevel.Warn,
+            "error" => LogLevel.Error,
+            _ => LogLevel.Info
+        };
+    }
+
+    /// <summary>日志级别（保留原 API：设置窗口/兼容模式可调）</summary>
+    public static LogLevel MinimumLevel
+    {
+        get => LevelSwitch.MinimumLevel switch
+        {
+            LogEventLevel.Debug => LogLevel.Debug,
+            LogEventLevel.Information => LogLevel.Info,
+            LogEventLevel.Warning => LogLevel.Warn,
+            _ => LogLevel.Error
+        };
+        set => LevelSwitch.MinimumLevel = value switch
+        {
+            LogLevel.Debug => LogEventLevel.Debug,
+            LogLevel.Info => LogEventLevel.Information,
+            LogLevel.Warn => LogEventLevel.Warning,
+            _ => LogEventLevel.Error
+        };
+    }
 
     public enum LogLevel
     {
@@ -31,134 +67,74 @@ public static class AppLog
     /// <summary>单文件超过该大小（字节）后滚动</summary>
     private const long MaxLogSize = 8 * 1024 * 1024;
 
-    private static readonly Lock Sync = new();
-    private static string _currentDate = string.Empty;
-    private static string _currentFile = string.Empty;
-    private static long _currentSize;
-    private static int _rollIndex;
+    /// <summary>日志根目录（托盘"打开日志目录"也指向这里）</summary>
+    public static string LogDirectory { get; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "Stanza", "logs");
 
     static AppLog()
     {
         try
         {
             Directory.CreateDirectory(LogDirectory);
-            CleanupOldLogs();
+            CleanupLegacyLogs(); // 清旧的 fluentlyrics-*.log（改名遗留）与过期日志
+
+            Log.Logger = new LoggerConfiguration()
+                .MinimumLevel.ControlledBy(LevelSwitch)
+                .WriteTo.Async(a => a.File(
+                    path: Path.Combine(LogDirectory, "stanza-.log"),
+                    rollingInterval: RollingInterval.Day, // stanza-20260901.log
+                    fileSizeLimitBytes: MaxLogSize, // 单文件 8MB 上限
+                    rollOnFileSizeLimit: true, // 超限滚 _001 后缀
+                    retainedFileCountLimit: KeepDays, // 保留最近 14 个文件
+                    outputTemplate:
+                    "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] [Stanza] {Message:lj}{NewLine}{Exception}"))
+                .CreateLogger();
         }
         catch
         {
-            // 日志目录初始化失败不能影响主流程
+            Log.Logger = Serilog.Core.Logger.None; // 日志初始化失败绝不能影响主流程
         }
     }
 
-    /// <summary>日志根目录（托盘"打开日志目录"也指向这里）</summary>
-    public static string LogDirectory { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "Stanza", "logs");
+    // ── 传统重载（现有全部调用点零改动）──
+    public static void Debug(string message) => Write(LogEventLevel.Debug, null, message);
+    public static void Info(string message) => Write(LogEventLevel.Information, null, message);
+    public static void Warn(string message) => Write(LogEventLevel.Warning, null, message);
+    public static void Error(string message, Exception? ex = null) => Write(LogEventLevel.Error, ex, message);
 
-    public static void Debug(string message)
+    // ── 结构化重载（新代码用：命名属性可被检索/导出）──
+    public static void Debug(string template, params object?[] args) => Write(LogEventLevel.Debug, null, template, args);
+    public static void Info(string template, params object?[] args) => Write(LogEventLevel.Information, null, template, args);
+    public static void Warn(string template, params object?[] args) => Write(LogEventLevel.Warning, null, template, args);
+    public static void Error(Exception? ex, string template, params object?[] args) => Write(LogEventLevel.Error, ex, template, args);
+
+    /// <summary>退出时冲刷缓冲（App.OnExit 调用）</summary>
+    public static void Flush() => Log.CloseAndFlush();
+
+    private static void Write(LogEventLevel level, Exception? ex, string template, object?[]? args = null)
     {
-        Write("DEBUG", message);
-    }
-
-    public static void Info(string message)
-    {
-        Write("INFO", message);
-    }
-
-    public static void Warn(string message)
-    {
-        Write("WARN", message);
-    }
-
-    public static void Error(string message, Exception? ex = null)
-    {
-        Write("ERROR", ex is null ? message : $"{message}{Environment.NewLine}{ex}");
-    }
-
-    private static void Write(string level, string message)
-    {
-        // 调试器输出始终保留，Rider/VS 里依然看得到
-        // 全限定名：本类有静态方法 Debug，裸写 Debug 会被解析成方法组而不是 System.Diagnostics.Debug
-        System.Diagnostics.Debug.WriteLine($"[Stanza] {message}");
-
-        // 低于当前级别（如发行版默认 Info 时的 DEBUG）不落盘，避免高频调试日志拖累磁盘 IO
-        if (!ShouldWriteFile(level))
+        // 调试器输出始终保留（全限定名：本类有静态方法 Debug，裸写会被解析成方法组）
+        System.Diagnostics.Debug.WriteLine($"[Stanza] {template}");
+        var logger = Log.Logger;
+        if (!logger.IsEnabled(level))
             return;
-
-        try
-        {
-            lock (Sync)
-            {
-                var now = DateTime.Now;
-                var date = now.ToString("yyyyMMdd");
-                if (date != _currentDate)
-                {
-                    _currentDate = date;
-                    _currentFile = Path.Combine(LogDirectory, $"fluentlyrics-{date}.log");
-                    _currentSize = SafeFileLength(_currentFile);
-                    _rollIndex = 0;
-                }
-
-                if (_currentSize > MaxLogSize)
-                {
-                    _currentFile = Path.Combine(LogDirectory, $"fluentlyrics-{date}.log.{++_rollIndex}");
-                    _currentSize = SafeFileLength(_currentFile);
-                }
-
-                var line = $"{now:yyyy-MM-dd HH:mm:ss.fff} [{level}] [Stanza] {message}{Environment.NewLine}";
-                File.AppendAllText(_currentFile, line, Encoding.UTF8);
-                _currentSize += Encoding.UTF8.GetByteCount(line);
-            }
-        }
-        catch
-        {
-            // 日志写入失败绝不能影响主功能
-        }
+        logger.Write(level, ex, template, args ?? []);
     }
 
-    /// <summary>该级别是否达到 MinimumLevel（DEBUG &lt; INFO &lt; WARN &lt; ERROR）</summary>
-    private static bool ShouldWriteFile(string level)
-    {
-        return Rank(level) >= Rank(MinimumLevel.ToString());
-    }
-
-    private static int Rank(string level)
-    {
-        return level.ToUpperInvariant() switch
-        {
-            "DEBUG" => 0,
-            "INFO" => 1,
-            "WARN" => 2,
-            "ERROR" => 3,
-            _ => 1
-        };
-    }
-
-    private static long SafeFileLength(string path)
-    {
-        try
-        {
-            return File.Exists(path) ? new FileInfo(path).Length : 0;
-        }
-        catch
-        {
-            return 0;
-        }
-    }
-
-    /// <summary>启动时清理超过保留天数的旧日志</summary>
-    private static void CleanupOldLogs()
+    /// <summary>清理改名前遗留的 fluentlyrics-*.log 与 7 天前的旧日志（Serilog 只管自己的滚动文件）</summary>
+    private static void CleanupLegacyLogs()
     {
         try
         {
             if (!Directory.Exists(LogDirectory))
                 return;
-
-            var threshold = DateTime.Now.AddDays(-KeepDays);
-            foreach (var file in Directory.EnumerateFiles(LogDirectory, "fluentlyrics-*.log*"))
+            var threshold = DateTime.Now.AddDays(-7);
+            foreach (var file in Directory.EnumerateFiles(LogDirectory, "*.log*"))
             {
                 var info = new FileInfo(file);
-                if (info.LastWriteTime < threshold)
+                if (info.Name.StartsWith("fluentlyrics-", StringComparison.OrdinalIgnoreCase) ||
+                    info.LastWriteTime < threshold)
                     File.Delete(file);
             }
         }

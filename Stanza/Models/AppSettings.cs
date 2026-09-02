@@ -4,26 +4,29 @@ namespace Stanza.Models;
 public sealed class AppSettings
 {
     /// <summary>歌词字号（DIP）</summary>
-    public double FontSize { get; set; } = 15;
+    public double FontSize { get; init; } = 15;
 
     /// <summary>歌词颜色（ARGB 十六进制，如 #FFFFFFFF）</summary>
-    public string LyricColor { get; set; } = "#FFFFFFFF";
+    public string LyricColor { get; init; } = "#FFFFFFFF";
 
     /// <summary>歌词全局时间偏移（毫秒，正数 = 歌词提前显示）</summary>
-    public int LyricOffsetMs { get; set; }
+    public int LyricOffsetMs { get; init; }
 
     /// <summary>鼠标点击穿透</summary>
-    public bool ClickThrough { get; set; } = true;
+    public bool ClickThrough { get; init; } = true;
 
     /// <summary>开机自启</summary>
-    public bool AutoStart { get; set; }
+    public bool AutoStart { get; init; }
+    
+    /// <summary>日志级别（Debug/Info/Warn/Error），排查问题时改成 Debug 后重启生效；平时保持 Info</summary>
+    public string LogLevel { get; init; } = "Info";
 
     /// <summary>
     ///     任务栏定位策略白名单（定位器 Key 列表）：
     ///     FluentFlyout = 贴 FluentFlyout 小组件；Independent = 独立定位（不依赖外部组件）。
     ///     至少勾选一项；按列表顺序（固定优先级 FluentFlyout &gt; Independent）依次尝试。
     /// </summary>
-    public List<string> TaskbarLocatorWhitelist { get; set; } = ["FluentFlyout", "Independent"];
+    public List<string> TaskbarLocatorWhitelist { get; init; } = ["FluentFlyout", "Independent"];
 
     /// <summary>
     ///     放置方向（相对锚点组件）：

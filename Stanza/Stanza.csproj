@@ -15,6 +15,9 @@
 
     <ItemGroup>
         <PackageReference Include="Lyricify.Lyrics.Helper" Version="0.2.0"/>
+        <PackageReference Include="Serilog" Version="4.*" />
+        <PackageReference Include="Serilog.Sinks.File" Version="7.*" />
+        <PackageReference Include="Serilog.Sinks.Async" Version="2.*" />
         <Resource Include="Assets\app.ico"/>
 
         <!-- WinForms 只用于托盘；去掉它带来的隐式 using，避免与 WPF 的 Application/Point 等撞名 -->

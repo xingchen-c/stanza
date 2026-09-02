@@ -14,19 +14,13 @@ public sealed class LyricsService
     // 最近歌曲的歌词缓存：切回听过的歌秒出，不用重新走网络搜索
     private readonly Dictionary<string, CacheEntry> _cache = new();
     private readonly ILyricsProvider[] _providers;
-    private List<LyricLine> _lines = new();
+    private List<LyricLine> _lines = [];
 
     private sealed class CacheEntry
     {
         public LyricsLoadResult Status;
         public List<LyricLine> Lines = [];
         public long LastUsedUnixMs;
-    }
-
-    /// <summary>默认歌词源：QQ 音乐优先，网易云次之，LRCLIB 最后兜底</summary>
-    public LyricsService()
-        : this(new QqMusicLyricsProvider(), new NeteaseLyricsProvider(), new LrclibLyricsProvider())
-    {
     }
 
     /// <summary>可注入自定义歌词源（按顺序尝试，第一个返回 Loaded/Instrumental 的胜出）</summary>
@@ -141,7 +135,7 @@ public sealed class LyricsService
     /// <summary>清空歌词</summary>
     public void Clear()
     {
-        _lines = new List<LyricLine>();
+        _lines = [];
     }
 
     /// <summary>清除歌词缓存（内存 + 磁盘），排查歌词问题时用</summary>
@@ -180,7 +174,7 @@ public sealed class LyricsService
         {
             var result = await provider.LoadCandidateAsync(candidate);
             if (result.Status != LyricsLoadResult.NotFound)
-                _lines = result.Lines.ToList();
+                _lines = [.. result.Lines];
             return result.Status;
         }
         catch (Exception ex)
