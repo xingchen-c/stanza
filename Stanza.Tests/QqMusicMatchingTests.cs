@@ -201,7 +201,7 @@ public class QqMusicMatchingTests
     [Fact]
     public void 同名两候选时长近者优先()
     {
-        double Score(int duration) => QqMusicLyricsProvider.ComputeMatchScore(
+        static double Score(int duration) => QqMusicLyricsProvider.ComputeMatchScore(
             "伴宅日记", ["千月兔"], null, duration, "Medium",
             "伴宅日记", "千月兔", 263000);
         Assert.True(Score(263000) > Score(210000));
@@ -262,7 +262,7 @@ public class QqMusicMatchingTests
     public void 同名多版本_同歌手档内仍靠时长选版本()
     {
         // 同歌手（主键同为 1.0）时，时长近者综合分更高 → 选对版本（DJ/Live/伴奏）
-        double Score(int duration) => QqMusicLyricsProvider.ComputeMatchScore(
+        static double Score(int duration) => QqMusicLyricsProvider.ComputeMatchScore(
             "长生诀", ["西瓜JUN"], null, duration, "Medium",
             "长生诀", "西瓜JUN", 191000);
         Assert.True(Score(191000) > Score(23000)); // 原曲 191s > 23s 片段版

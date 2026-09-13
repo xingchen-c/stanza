@@ -8,7 +8,6 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
-using Windows.Media.Control;
 using Stanza.Models;
 using Stanza.Services;
 using Stanza.Services.Lyrics;
@@ -29,7 +28,6 @@ public partial class MainWindow
     private const uint SwpNosize = 0x0001;
     private const uint SwpNoactivate = 0x0010;
     private const double MarqueeEndPadding = 24; // 滚到最右侧时预留的空白
-    private const int PauseSeekThresholdMs = 2000; // 暂停中位置大跳变（拖动进度条）才接受；QQ 迟到的最终位置忽略
     private static readonly IntPtr HwndTopmost = new(-1);
     private static readonly string[] ShellWindowClasses = ["Shell_TrayWnd", "Shell_SecondaryTrayWnd", "Progman", "WorkerW"];
     private readonly TaskbarService _taskbar = new();
@@ -60,17 +58,11 @@ public partial class MainWindow
     private string _reapplyDiagSig = string.Empty; // 布局诊断签名（仅变化时打印，防刷屏）
     private bool? _lastRenderDowngraded; // 渲染降级上次状态（日志按变化打印 Info，其余 Debug）
 
-    /// <summary>播放位置真相机：时序状态与切歌闸门全部收口于此（M2 位置真相收敛的第一步）</summary>
-    private readonly PlaybackPositionTracker _positionTracker = new();
-
     /// <summary>渲染跳过原因的上次值（同一原因连续跳过不重复打日志）</summary>
     private string? _lastSkipReason;
 
     /// <summary>位置采样诊断的节流（2 秒）</summary>
     private int _lastPositionSampleLogMs;
-
-    /// <summary>Tracker 视角的上次播放状态（过滤 PlaybackStatusChanged 的重复推送）</summary>
-    private GlobalSystemMediaTransportControlsSessionPlaybackStatus? _lastTrackerStatus;
 
     // ---- 运行时设置（来自 AppSettings）----
     private AppSettings _settings = AppSettingsService.Load();
@@ -161,9 +153,6 @@ public partial class MainWindow
         _lastProgress = -1;
         _animatedClipWidth = -1;
 
-        // 会话断开/重连：位置合成与闸门状态全部复位
-        _positionTracker.Reset();
-
         CoverImage.Source = null;
         // 封面位常驻：会话接入时显示占位（无封面显示音符），断开时收起
         CoverBorder.Visibility = connected && _showMediaControls ? Visibility.Visible : Visibility.Collapsed;
@@ -192,7 +181,6 @@ public partial class MainWindow
         _currentIndex = -1;
         _lastProgress = -1;
         _animatedClipWidth = -1;
-        _positionTracker.OnTrackSwitch(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         _wordBoundaryCache.Clear(); // 上一首歌的逐字宽度缓存作废（常驻工具防无界增长）
     }
 
@@ -205,19 +193,12 @@ public partial class MainWindow
     }
 
     /// <summary>播放状态变化：刷新播放/暂停图标与卡片显隐</summary>
-    private void OnServicePlaybackStatus(GlobalSystemMediaTransportControlsSessionPlaybackStatus? status)
+    private void OnServicePlaybackStatus(PlaybackState status)
     {
-        PlayPauseButton.Content = status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing
+        PlayPauseButton.Content = status == PlaybackState.Playing
             ? "\uE769"
             : "\uE768";
         PositionCard();
-        // Tracker 只关心"非播放→播放"的真实跳变（SMTC 允许重复推送同一状态）
-        if (!status.HasValue) return;
-        if (status.Value == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing &&
-            _lastTrackerStatus.HasValue &&
-            _lastTrackerStatus.Value != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
-            _positionTracker.OnResumeBoundary(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        _lastTrackerStatus = status.Value;
     }
 
     /// <summary>封面就绪/变化：更新封面显示并重算歌词布局（null = 无封面/失败）</summary>
@@ -640,7 +621,7 @@ public partial class MainWindow
     /// <summary>是否因播放状态而需要隐藏卡片；无会话或查询失败时不隐藏</summary>
     private bool ShouldHideForPlayback()
     {
-        if (_smtc.Session is null)
+        if (_smtc.PlaybackState == PlaybackState.Unknown)
             return false;
 
         // 切歌时 QQ 会短暂发 Stopped（切换序列的一部分），不是真的停止播放：
@@ -648,21 +629,13 @@ public partial class MainWindow
         if (_smtc.IsSwitchingTrack)
             return false;
 
-        try
+        // 停止/关闭始终隐藏；暂停是否隐藏由设置决定（可保持显示方便看歌词）
+        return _smtc.PlaybackState switch
         {
-            var status = _smtc.Session.GetPlaybackInfo().PlaybackStatus;
-            // 停止/关闭始终隐藏；暂停是否隐藏由设置决定（可保持显示方便看歌词）
-            if (status is GlobalSystemMediaTransportControlsSessionPlaybackStatus.Stopped
-                or GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed)
-                return true;
-            if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Paused && _settings.HideOnPause)
-                return true;
-            return false;
-        }
-        catch
-        {
-            return false; // 查询失败时保持现状，避免误隐藏
-        }
+            PlaybackState.Stopped or PlaybackState.Closed => true,
+            PlaybackState.Paused => _settings.HideOnPause,
+            _ => false
+        };
     }
 
     /// <summary>托盘菜单：切换卡片显隐（暂停播放时仍保持隐藏，与播放状态逻辑一致）</summary>
@@ -943,10 +916,6 @@ public partial class MainWindow
     /// </summary>
     private void OnTickerTick(object? sender, EventArgs e)
     {
-        var session = _smtc.Session;
-        if (session is null)
-            return;
-
         // 调整位置模式下不渲染歌词进度，避免卡拉OK裁剪盖住提示文字
         if (_adjustingPosition)
             return;
@@ -969,6 +938,9 @@ public partial class MainWindow
             ApplyHoverState(); // 统一恢复（含 LyricViewport 可见性），避免窗口隐藏后歌词卡在 Hidden
         }
 
+        var nowUtcMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var sample = _smtc.SamplePlayback(nowUtcMs);
+
         // 播放状态变化 → 立即刷新卡片显隐（PlaybackInfoChanged 事件之外的 100ms 兜底）
         var hide = ShouldHideForPlayback();
         if (hide != _hiddenForPlayback)
@@ -977,34 +949,15 @@ public partial class MainWindow
             PositionCard();
         }
 
-        GlobalSystemMediaTransportControlsSessionTimelineProperties? timeline;
-        int rawPositionMs;
-        bool isPlaying;
-        try
-        {
-            timeline = _smtc.GetTimeline();
-            if (timeline is null)
-                return;
-            rawPositionMs = (int)timeline.Position.TotalMilliseconds;
-            isPlaying = session.GetPlaybackInfo().PlaybackStatus ==
-                        GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
-        }
-        catch
-        {
-            return;
-        }
-
-        var nowUtcMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var sample = _positionTracker.Sample(
-            rawPositionMs, timeline.LastUpdatedTime.ToUnixTimeMilliseconds(), isPlaying, nowUtcMs);
-
         // 位置链路常驻诊断（Debug 级，2s 节流）：观察各播放器快照行为差异的仪器
         if (Environment.TickCount - _lastPositionSampleLogMs > 2000)
         {
             _lastPositionSampleLogMs = Environment.TickCount;
-            AppLog.Debug("位置采样: 原始={RawMs}ms 计算={ComputedMs}ms 快照距今={AgeMs}ms 状态={Status} 决策={Decision}",
-                rawPositionMs, sample.PositionMs, nowUtcMs - timeline.LastUpdatedTime.ToUnixTimeMilliseconds(),
-                isPlaying ? "Playing" : "Paused", sample.ShouldRender ? "渲染" : sample.SkipReason);
+            AppLog.Debug(
+                $"位置采样: 原始={sample.RawPositionMs}ms " +
+                $"计算={sample.PositionMs}ms " +
+                $"状态={sample.PlaybackState} " +
+                $"决策={(sample.ShouldRender ? "渲染" : sample.SkipReason)}");
         }
 
         // 渲染闸门（旧快照窗口 / 位置毛刺）已由 Tracker 收口，跳过原因变化时打一条
@@ -1013,7 +966,7 @@ public partial class MainWindow
             if (sample.SkipReason != _lastSkipReason)
             {
                 _lastSkipReason = sample.SkipReason;
-                AppLog.Debug("渲染跳过: {Reason}", sample.SkipReason);
+                AppLog.Debug($"渲染跳过: {sample.SkipReason}");
             }
 
             return;
@@ -1023,9 +976,6 @@ public partial class MainWindow
 
         // 全局歌词偏移（用户偏好，渲染层叠加，不属于位置真相）：正数 = 歌词提前显示
         var positionMs = Math.Max(0, sample.PositionMs + _settings.LyricOffsetMs);
-
-        // 切歌状态机（位置回退检测、误判恢复、看门狗）统一由服务管理
-        _smtc.NotifyPlaybackPosition(rawPositionMs);
 
         // 等待新歌歌词时不渲染，占位由 StatusChanged 事件驱动
         if (_smtc.IsSwitchingTrack)
