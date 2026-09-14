@@ -53,11 +53,19 @@ public static class AppLog
         };
     }
 
+    /// <summary>应用日志级别。</summary>
     public enum LogLevel
     {
+        /// <summary>输出全部诊断信息。</summary>
         Debug,
+
+        /// <summary>输出常规运行信息。</summary>
         Info,
+
+        /// <summary>只输出警告和错误。</summary>
         Warn,
+
+        /// <summary>只输出错误。</summary>
         Error
     }
 
@@ -98,15 +106,29 @@ public static class AppLog
     }
 
     // ── 传统重载（现有全部调用点零改动）──
+    /// <summary>写入 Debug 日志。</summary>
     public static void Debug(string message) => Write(LogEventLevel.Debug, null, message);
+
+    /// <summary>写入 Info 日志。</summary>
     public static void Info(string message) => Write(LogEventLevel.Information, null, message);
+
+    /// <summary>写入 Warn 日志。</summary>
     public static void Warn(string message) => Write(LogEventLevel.Warning, null, message);
+
+    /// <summary>写入 Error 日志，可附带异常。</summary>
     public static void Error(string message, Exception? ex = null) => Write(LogEventLevel.Error, ex, message);
 
     // ── 结构化重载（新代码用：命名属性可被检索/导出）──
+    /// <summary>写入带命名属性的 Debug 日志。</summary>
     public static void Debug(string template, params object?[] args) => Write(LogEventLevel.Debug, null, template, args);
+
+    /// <summary>写入带命名属性的 Info 日志。</summary>
     public static void Info(string template, params object?[] args) => Write(LogEventLevel.Information, null, template, args);
+
+    /// <summary>写入带命名属性的 Warn 日志。</summary>
     public static void Warn(string template, params object?[] args) => Write(LogEventLevel.Warning, null, template, args);
+
+    /// <summary>写入带命名属性和异常的 Error 日志。</summary>
     public static void Error(Exception? ex, string template, params object?[] args) => Write(LogEventLevel.Error, ex, template, args);
 
     /// <summary>退出时冲刷缓冲（App.OnExit 调用）</summary>

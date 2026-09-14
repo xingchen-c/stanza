@@ -1,6 +1,6 @@
 ﻿namespace Stanza.Services.Playback;
 
-// 切歌策略
+/// <summary>切歌早期信号、确认轮询、看门狗和误判恢复策略。</summary>
 internal sealed record PlaybackSwitchPolicy(
     int PositionRegressionThresholdMs,
     int ConfirmationPollIntervalMs,

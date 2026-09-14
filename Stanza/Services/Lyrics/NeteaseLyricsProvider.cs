@@ -11,10 +11,13 @@ public sealed class NeteaseLyricsProvider : ILyricsProvider
     /// <summary>自动匹配最多尝试的候选数（兜底源，别太贪，避免拖慢整条加载链）</summary>
     private const int MaxAutoAttempts = 3;
 
+    /// <inheritdoc />
     public string Key => "NetEase";
 
+    /// <inheritdoc />
     public string Name => "网易云音乐";
 
+    /// <inheritdoc />
     public async Task<LyricsResult> LoadAsync(string title, string artist, int? durationMs)
     {
         if (string.IsNullOrWhiteSpace(title))
@@ -27,15 +30,28 @@ public sealed class NeteaseLyricsProvider : ILyricsProvider
                 return new LyricsResult(LyricsLoadResult.NotFound, []);
 
             // 复用 QQ 那套「歌名硬门槛 + 歌手精确优先 + 综合打分」，保证各源匹配策略一致
-            var ranked = results
+            var scored = results
                 .Where(r => QqMusicLyricsProvider.TitlesRelated(r.Title ?? title, title))
                 .Select((r, index) => (Candidate: r, Index: index, Score: QqMusicLyricsProvider.ComputeMatchScore(
                     r.Title, r.Artists, r.Album, r.DurationMs, r.MatchType,
-                    title, artist, durationMs)))
-                .OrderByDescending(x => QqMusicLyricsProvider.ArtistRankKey(x.Candidate.Artists, artist))
+                    title, artist, durationMs),
+                    ArtistRank: QqMusicLyricsProvider.ArtistRankKey(r.Artists, artist)))
+                .OrderByDescending(x => x.ArtistRank)
                 .ThenByDescending(x => x.Score)
                 .ThenBy(x => x.Index)
                 .ToList();
+
+            var hasExpectedArtist = !string.IsNullOrWhiteSpace(artist);
+            if (hasExpectedArtist &&
+                !scored.Any(x => x.ArtistRank >= QqMusicLyricsProvider.ArtistMatchThreshold))
+            {
+                AppLog.Info($"网易云无歌手匹配候选，拒绝跨歌手自动命中: '{title}' / '{artist}'，歌名相关候选={scored.Count}");
+                return new LyricsResult(LyricsLoadResult.NotFound, []);
+            }
+
+            var ranked = hasExpectedArtist
+                ? scored.Where(x => x.ArtistRank >= QqMusicLyricsProvider.ArtistMatchThreshold).ToList()
+                : scored;
 
             var sawInstrumental = false;
             var attempts = 0;
@@ -66,21 +82,42 @@ public sealed class NeteaseLyricsProvider : ILyricsProvider
         }
     }
 
+    /// <inheritdoc />
     public async Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(string title, string artist, int? durationMs)
     {
         try
         {
             var results = await SearchAsync(title, artist, durationMs);
+            var hasExpectedArtist = !string.IsNullOrWhiteSpace(artist);
             return results
-                .Select(r => new LyricCandidate(
-                    Key,
-                    Name,
-                    r.Id,
-                    r.Title ?? title,
-                    r.Artists is { Length: > 0 } ? string.Join(", ", r.Artists) : artist,
-                    r.Album,
-                    r.DurationMs,
-                    r.MatchType?.ToString()))
+                .Where(r => QqMusicLyricsProvider.TitlesRelated(r.Title ?? title, title))
+                .Select((r, index) => new
+                {
+                    Candidate = new LyricCandidate(
+                        Key,
+                        Name,
+                        r.Id,
+                        r.Title ?? title,
+                        r.Artists is { Length: > 0 } ? string.Join(", ", r.Artists) : artist,
+                        r.Album,
+                        r.DurationMs,
+                        r.MatchType?.ToString())
+                    {
+                        MatchScore = QqMusicLyricsProvider.ComputeMatchScore(
+                            r.Title, r.Artists, r.Album, r.DurationMs, r.MatchType,
+                            title, artist, durationMs),
+                        ArtistMatched = hasExpectedArtist
+                            ? QqMusicLyricsProvider.ArtistRankKey(r.Artists, artist) >=
+                              QqMusicLyricsProvider.ArtistMatchThreshold
+                            : null
+                    },
+                    Index = index,
+                    ArtistRank = QqMusicLyricsProvider.ArtistRankKey(r.Artists, artist)
+                })
+                .OrderByDescending(x => x.ArtistRank)
+                .ThenByDescending(x => x.Candidate.MatchScore)
+                .ThenBy(x => x.Index)
+                .Select(x => x.Candidate)
                 .ToList();
         }
         catch (Exception ex)

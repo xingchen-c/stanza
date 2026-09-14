@@ -11,6 +11,7 @@ public partial class LyricsPickerWindow : Window
     /// <summary>用户选中的候选（DialogResult=true 时有效）</summary>
     public LyricCandidate? SelectedCandidate { get; private set; }
 
+    /// <summary>用候选列表初始化选择窗口；空列表时禁用应用按钮。</summary>
     public LyricsPickerWindow(IReadOnlyList<LyricCandidate> candidates)
     {
         InitializeComponent();
@@ -52,6 +53,10 @@ public partial class LyricsPickerWindow : Window
             parts.Add(c.Album);
         if (c.DurationMs is { } ms)
             parts.Add($"{ms / 60000}:{ms % 60000 / 1000:00}");
+        if (c.MatchScore > 0)
+            parts.Add($"综合匹配 {c.MatchScore * 100:F0}%");
+        if (c.ArtistMatched == false)
+            parts.Add("歌手可能不一致");
         parts.Add(FormatMatchType(c.MatchType));
 
         return new CandidateView(

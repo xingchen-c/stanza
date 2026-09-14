@@ -15,15 +15,19 @@ public sealed class IndependentTaskbarLocator : ITaskbarWidgetLocator
     private const int CardRightGap = 8;
     private const int MaxCardWidth = 600;
     private const int MinCardWidth = 120;
+    /// <inheritdoc />
     public string Key => "Independent";
 
+    /// <inheritdoc />
     public string Name => "独立定位";
 
+    /// <summary>独立定位不依赖外部组件锚点，因此固定返回 null。</summary>
     public PixelRect? Detect(IntPtr trayHwnd, PixelRect trayRect)
     {
         return null;
     }
 
+    /// <summary>根据开始按钮和托盘区域计算卡片推荐矩形。</summary>
     public PixelRect? DetectCardRegion(IntPtr trayHwnd, PixelRect trayRect)
     {
         if (trayHwnd == IntPtr.Zero || trayRect.Width <= 0 || trayRect.Height <= 0)

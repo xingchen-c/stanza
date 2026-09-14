@@ -1,5 +1,6 @@
 using System.Windows;
 
+// WPF 主题资源位置声明：主题资源与通用资源都编译在当前程序集内。
 [assembly: ThemeInfo(
     ResourceDictionaryLocation.None, //where theme specific resource dictionaries are located
     //(used if a resource is not found in the page,

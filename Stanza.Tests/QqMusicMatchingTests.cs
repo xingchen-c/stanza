@@ -22,6 +22,9 @@ public class QqMusicMatchingTests
     [InlineData("Stairway to Heaven", "stairway to heaven", true)] // 大小写
     [InlineData("狼人杀狂想曲", "伴宅日记", false)]               // 历史 bug：同歌手不同歌混入候选
     [InlineData("理想不大巡演上海站回顾：最搞笑致谢环节！", "理想不大", true)] // 巡演回顾也含歌名
+    [InlineData("星", "星炬不熄", false)]                          // 单字不参与包含匹配
+    [InlineData("花", "碎花", false)]                              // 单字不参与包含匹配
+    [InlineData("花", "花", true)]                                 // 单字完全相等仍有效
     public void TitlesRelated_判断歌名是否同一首(string lyricsTitle, string expectedTitle, bool expected)
     {
         Assert.Equal(expected, QqMusicLyricsProvider.TitlesRelated(lyricsTitle, expectedTitle));
@@ -235,6 +238,16 @@ public class QqMusicMatchingTests
     {
         // SMTC 给不出歌手时，主键退化为 0，排序退回综合分（时长+MatchType），不误排
         AssertClose(0, QqMusicLyricsProvider.ArtistRankKey(["许嵩"], null));
+    }
+
+    [Fact]
+    public void ArtistRankKey_无交集低于自动匹配闸门()
+    {
+        var noMatch = QqMusicLyricsProvider.ArtistRankKey(["童译"], "ZWLJ/国风引力");
+        var partialMatch = QqMusicLyricsProvider.ArtistRankKey(["ZWLJ", "张三"], "ZWLJ/国风引力");
+
+        Assert.True(noMatch < QqMusicLyricsProvider.ArtistMatchThreshold);
+        Assert.True(partialMatch >= QqMusicLyricsProvider.ArtistMatchThreshold);
     }
 
     [Fact]

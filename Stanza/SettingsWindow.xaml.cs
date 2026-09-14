@@ -19,6 +19,7 @@ public partial class SettingsWindow
     // 保存设置时保留与界面无关的字段（如手动位置偏移），避免被默认值覆盖
     private readonly AppSettings _baseSettings;
 
+    /// <summary>用当前设置初始化窗口，并把控件事件绑定到实时预览与保存流程。</summary>
     public SettingsWindow(AppSettings settings)
     {
         InitializeComponent();

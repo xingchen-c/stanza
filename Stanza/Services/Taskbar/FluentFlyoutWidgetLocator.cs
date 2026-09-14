@@ -15,10 +15,13 @@ public sealed class FluentFlyoutWidgetLocator : ITaskbarWidgetLocator
     // 任务栏上需要"排到右侧"的组件进程名列表，可随时扩展
     private static readonly string[] ComponentProcessNames = ["FluentFlyout"];
 
+    /// <inheritdoc />
     public string Key => "FluentFlyout";
 
+    /// <inheritdoc />
     public string Name => "FluentFlyout";
 
+    /// <summary>读取 FluentFlyout 宿主窗口的区域裁剪，得到组件真实屏幕矩形。</summary>
     public PixelRect? Detect(IntPtr trayHwnd, PixelRect trayRect)
     {
         foreach (var hwnd in FindFluentFlyoutTaskbarWindows(trayHwnd))

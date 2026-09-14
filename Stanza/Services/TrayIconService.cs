@@ -11,6 +11,7 @@ public sealed class TrayIconService : IDisposable
 
     private readonly ToolStripMenuItem? _adjustMenuItem;
 
+    /// <summary>创建托盘图标和右键菜单。</summary>
     public TrayIconService()
     {
         _notifyIcon = new NotifyIcon
@@ -36,6 +37,7 @@ public sealed class TrayIconService : IDisposable
         _notifyIcon.DoubleClick += (_, _) => ShowHideRequested?.Invoke();
     }
 
+    /// <summary>隐藏并释放托盘图标。</summary>
     public void Dispose()
     {
         _notifyIcon.Visible = false;

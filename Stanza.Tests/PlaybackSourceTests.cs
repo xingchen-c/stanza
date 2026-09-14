@@ -1,5 +1,7 @@
 using Stanza.Models;
 using Stanza.Services.Playback;
+using Stanza.Services.Lyrics;
+using System.Text.Json;
 using Xunit;
 
 namespace Stanza.Tests;
@@ -81,6 +83,21 @@ public class PlaybackSourceSelectorTests
     }
 
     [Fact]
+    public void Explicit_netease_selects_observed_cloudmusic_session()
+    {
+        var sessions = new[]
+        {
+            Descriptor("qq", "QQMusic.exe", PlaybackState.Playing, true),
+            Descriptor("netease", "cloudmusic.exe", PlaybackState.Paused, false)
+        };
+
+        Assert.Equal(1, PlaybackSourceSelector.SelectIndex(
+            sessions,
+            PlaybackSourceIds.NetEase,
+            "qq"));
+    }
+
+    [Fact]
     public void Unknown_explicit_source_returns_no_session()
     {
         var sessions = new[]
@@ -131,6 +148,44 @@ public class PlaybackSourcePolicyTests
     }
 
     [Fact]
+    public void Registry_resolves_observed_cloudmusic_aumid()
+    {
+        Assert.Equal(
+            PlaybackSourceIds.NetEase,
+            PlaybackSourceRegistry.ResolveBySession("cloudmusic.exe").Key);
+    }
+
+    [Fact]
+    public void Netease_policy_uses_wall_clock_and_ignores_degenerate_timeline()
+    {
+        var policy = PlaybackSourceRegistry.ResolveByKey(PlaybackSourceIds.NetEase);
+
+        Assert.False(policy.Timing.TrustLastUpdatedTime);
+        Assert.False(policy.Timing.AllowFreshSnapshotExtrapolation);
+        Assert.True(policy.Timing.AllowWallClockFallback);
+        Assert.False(policy.Timing.TrustPositionWhenPaused);
+        Assert.Equal(0, policy.Switch.StaleSnapshotWindowMs);
+        Assert.False(policy.Switch.UseStoppedAsEarlySignal);
+        Assert.False(policy.Switch.UseChangingAsEarlySignal);
+        Assert.False(policy.Switch.UseDurationChangeAsEarlySignal);
+        Assert.False(policy.Switch.UsePositionRegressionAsEarlySignal);
+    }
+
+    [Fact]
+    public void Registry_resolves_adapter_for_each_known_source()
+    {
+        Assert.Equal(
+            PlaybackSourceIds.QqMusic,
+            PlaybackSourceRegistry.ResolveAdapterBySession("QQMusic.exe").Key);
+        Assert.Equal(
+            PlaybackSourceIds.NetEase,
+            PlaybackSourceRegistry.ResolveAdapterBySession("cloudmusic.exe").Key);
+        Assert.Equal(
+            PlaybackSourceIds.AutoFallback,
+            PlaybackSourceRegistry.ResolveAdapterBySession("unknown.exe").Key);
+    }
+
+    [Fact]
     public void Qq_metadata_normalization_trims_values()
     {
         var policy = PlaybackSourceRegistry.ResolveByKey(PlaybackSourceIds.QqMusic);
@@ -145,6 +200,59 @@ public class PlaybackSourcePolicyTests
         Assert.Equal("artist", normalized.Artist);
         Assert.Equal("album", normalized.Album);
         Assert.Equal(1234, normalized.DurationMs);
+    }
+}
+
+public class TrackSwitchStateMachineTests
+{
+    [Fact]
+    public void Suspicion_can_be_confirmed_or_cleared()
+    {
+        var fsm = new TrackSwitchStateMachine();
+
+        fsm.Suspect();
+        Assert.Equal(TrackSwitchState.Suspected, fsm.State);
+        Assert.True(fsm.IsSuspected);
+
+        fsm.ClearSuspicion();
+        Assert.Equal(TrackSwitchState.Idle, fsm.State);
+
+        fsm.Suspect();
+        fsm.Begin("old-key", nowTick: 1000);
+        Assert.Equal(TrackSwitchState.Switching, fsm.State);
+        Assert.True(fsm.IsSwitching);
+    }
+
+    [Fact]
+    public void Loading_and_completion_update_recent_switch_window()
+    {
+        var fsm = new TrackSwitchStateMachine();
+        fsm.Begin("old-key", nowTick: 1000);
+        fsm.MarkLoading();
+
+        Assert.Equal(TrackSwitchState.Loading, fsm.State);
+        Assert.Equal(500, fsm.ElapsedMs(1500));
+
+        fsm.Complete(2000);
+
+        Assert.Equal(TrackSwitchState.Idle, fsm.State);
+        Assert.True(fsm.RecentlyCompleted(2500, 1000));
+        Assert.False(fsm.RecentlyCompleted(3500, 1000));
+    }
+
+    [Fact]
+    public void Reset_clears_switch_and_completion_state()
+    {
+        var fsm = new TrackSwitchStateMachine();
+        fsm.Begin("old-key", 1000);
+        fsm.Complete(2000);
+
+        fsm.Reset();
+
+        Assert.Equal(TrackSwitchState.Idle, fsm.State);
+        Assert.Equal(string.Empty, fsm.SwitchKey);
+        Assert.Equal(-1, fsm.LastCompletedAt);
+        Assert.False(fsm.IsSwitching);
     }
 }
 
@@ -211,10 +319,116 @@ public class PlaybackPositionTrackerTests
         Assert.Equal(9000, result.PositionMs);
     }
 
+    [Fact]
+    public void Netease_track_switch_starts_wall_clock_position_immediately()
+    {
+        var policy = PlaybackSourceRegistry.ResolveByKey(PlaybackSourceIds.NetEase);
+        var tracker = new PlaybackPositionTracker(policy.Timing, policy.Switch);
+        tracker.OnTrackSwitch(10_000);
+
+        var result = tracker.Sample(
+            rawPositionMs: 0,
+            snapshotUtcMs: DateTimeOffset.MinValue.ToUnixTimeMilliseconds(),
+            isPlaying: true,
+            nowUtcMs: 10_500);
+
+        Assert.True(result.ShouldRender);
+        Assert.Equal(500, result.PositionMs);
+    }
+
+    [Fact]
+    public void Netease_pause_freezes_last_computed_position_instead_of_raw_zero()
+    {
+        var policy = PlaybackSourceRegistry.ResolveByKey(PlaybackSourceIds.NetEase);
+        var tracker = new PlaybackPositionTracker(policy.Timing, policy.Switch);
+        tracker.OnTrackSwitch(9_000);
+        tracker.Sample(
+            rawPositionMs: 0,
+            snapshotUtcMs: DateTimeOffset.MinValue.ToUnixTimeMilliseconds(),
+            isPlaying: true,
+            nowUtcMs: 10_000);
+
+        var paused = tracker.Sample(
+            rawPositionMs: 0,
+            snapshotUtcMs: DateTimeOffset.MinValue.ToUnixTimeMilliseconds(),
+            isPlaying: false,
+            nowUtcMs: 10_100);
+
+        Assert.Equal(1000, paused.PositionMs);
+    }
+
     private static PlaybackPositionTracker CreateTracker()
     {
         return new PlaybackPositionTracker(
             PlaybackTimingPolicy.Default,
             PlaybackSwitchPolicy.Default);
+    }
+}
+
+public class LyricCandidateTests
+{
+    [Fact]
+    public void Old_choice_json_remains_deserializable()
+    {
+        const string json = """
+            {
+              "SourceKey": "QQ",
+              "SourceName": "QQ 音乐",
+              "Id": "123",
+              "Title": "测试",
+              "Artist": "歌手",
+              "Album": null,
+              "DurationMs": 1000,
+              "MatchType": "Perfect"
+            }
+            """;
+
+        var candidate = JsonSerializer.Deserialize<LyricCandidate>(json);
+
+        Assert.NotNull(candidate);
+        Assert.Equal("123", candidate.Id);
+        Assert.Equal(0, candidate.MatchScore);
+        Assert.Null(candidate.ArtistMatched);
+    }
+
+    [Fact]
+    public async Task Candidate_list_puts_artist_match_before_higher_scored_mismatch()
+    {
+        var service = new LyricsService(new FakeCandidateProvider());
+
+        var candidates = await service.GetCandidatesAsync("歌曲", "正确歌手", 1000);
+
+        Assert.Equal("正确歌手", candidates[0].Artist);
+        Assert.True(candidates[0].ArtistMatched);
+        Assert.Equal("错误歌手", candidates[1].Artist);
+        Assert.False(candidates[1].ArtistMatched);
+    }
+
+    private sealed class FakeCandidateProvider : ILyricsProvider
+    {
+        public string Key => "Fake";
+        public string Name => "测试源";
+
+        public Task<LyricsResult> LoadAsync(string title, string artist, int? durationMs)
+            => Task.FromResult(new LyricsResult(LyricsLoadResult.NotFound, []));
+
+        public Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(
+            string title, string artist, int? durationMs)
+        {
+            IReadOnlyList<LyricCandidate> result =
+            [
+                new(Key, Name, "wrong", title, "错误歌手", null, null, "Perfect")
+                {
+                    MatchScore = 0.95,
+                    ArtistMatched = false
+                },
+                new(Key, Name, "right", title, "正确歌手", null, null, "Low")
+                {
+                    MatchScore = 0.50,
+                    ArtistMatched = true
+                }
+            ];
+            return Task.FromResult(result);
+        }
     }
 }

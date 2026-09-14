@@ -116,8 +116,9 @@ internal sealed class PlaybackPositionTracker(
             if (_pausedDisplayPositionMs < 0)
             {
                 var finalPositionArrived =
-                    !timing.TrustLastUpdatedTime ||
-                    snapshotUtcMs > _lastPlayingSnapshotUtcMs;
+                    timing.TrustPositionWhenPaused &&
+                    (!timing.TrustLastUpdatedTime ||
+                     snapshotUtcMs > _lastPlayingSnapshotUtcMs);
 
                 _pausedDisplayPositionMs = finalPositionArrived
                     ? (int)Math.Min(rawPositionMs, int.MaxValue)
@@ -126,8 +127,9 @@ internal sealed class PlaybackPositionTracker(
                         : (int)Math.Min(rawPositionMs, int.MaxValue);
                 _lastPlayingSnapshotUtcMs = snapshotUtcMs;
             }
-            else if (!timing.TrustLastUpdatedTime ||
-                     snapshotUtcMs > _lastPlayingSnapshotUtcMs)
+            else if (timing.TrustPositionWhenPaused &&
+                     (!timing.TrustLastUpdatedTime ||
+                      snapshotUtcMs > _lastPlayingSnapshotUtcMs))
             {
                 var seekDelta = Math.Abs(rawPositionMs - _pausedDisplayPositionMs);
                 if (seekDelta > timing.PauseSeekThresholdMs)

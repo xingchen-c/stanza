@@ -6,6 +6,7 @@ namespace Stanza.Models;
 /// </summary>
 public static class TrackKey
 {
+    /// <summary>用不可见分隔符组合歌名和歌手，避免字符串拼接歧义。</summary>
     public static string Of(string title, string? artist)
     {
         return $"{title}\u0001{artist ?? string.Empty}";

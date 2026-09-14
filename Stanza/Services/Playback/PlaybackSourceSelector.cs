@@ -2,7 +2,10 @@ using Stanza.Models;
 
 namespace Stanza.Services.Playback;
 
-/// <summary>从 SMTC 会话描述中选择当前应跟随的目标会话。</summary>
+/// <summary>
+///     从 SMTC 会话描述中选择当前应跟随的目标会话。
+///     纯逻辑，不依赖 WinRT Session，便于单测和多会话排序验证。
+/// </summary>
 internal static class PlaybackSourceSelector
 {
     public static int SelectIndex(

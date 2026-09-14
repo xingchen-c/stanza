@@ -22,19 +22,17 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
     // 当前的key
     private string _currentKey = string.Empty;
 
-    private string _switchKey = string.Empty;
-    private int _switchStartedAt;
-    private bool _switchSuspected;
+    private readonly TrackSwitchStateMachine _switchFsm = new();
     private GlobalSystemMediaTransportControlsSessionPlaybackStatus? _lastPlaybackStatus;
     private GlobalSystemMediaTransportControlsSessionPlaybackStatus? _lastEventPlaybackStatus;
     private NowPlaying? _nowPlaying;
     private long _lastSwitchStartUtcMs;
-    private int _lastSwitchCompletedAt = -1;
     private double _lastEndTimeMs = -1;
     private int _lastTickPositionMs = -1;
     private CancellationTokenSource? _recoveryCts; // "未找到歌词"恢复调度（快速重试 + 后台补抓）
     private string _coverKey = string.Empty;
-    private bool _coverLoaded;
+    private string _coverFingerprint = string.Empty;
+    private bool _coverNoValueNotified;
     private bool _mediaControlsEnabled;
     private int _lastTimelineEventLogMs;
 
@@ -59,6 +57,9 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
     /// <summary>播放状态变化（图标/显隐刷新用）</summary>
     public event Action<PlaybackState>? PlaybackStatusChanged;
 
+    /// <summary>当前会话支持的播放能力变化（按钮/封面显隐用）</summary>
+    public event Action<PlaybackCapabilities>? PlaybackCapabilitiesChanged;
+
     /// <summary>封面就绪/变化（key + 位图；null = 无封面或加载失败）</summary>
     public event Action<string, BitmapSource?>? CoverChanged;
 
@@ -71,8 +72,15 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
     /// <summary>当前播放状态（UI 显隐/图标使用）</summary>
     public PlaybackState PlaybackState { get; private set; } = PlaybackState.Unknown;
 
+    /// <summary>当前会话运行时播放能力</summary>
+    public PlaybackCapabilities Capabilities { get; private set; } =
+        new(false, false, false, false, false);
+
+    /// <summary>当前生效的播放源策略 Key（QQ / Generic；诊断和 UI 展示用）</summary>
+    public string CurrentPlaybackSourcePolicyKey => _sourcePolicy.Key;
+
     /// <summary>是否正在等待新歌歌词</summary>
-    public bool IsSwitchingTrack { get; private set; }
+    public bool IsSwitchingTrack => _switchFsm.IsSwitching;
 
     /// <summary>歌词库（UI 渲染读取行数据）</summary>
     public LyricsService Lyrics { get; } = new(new QqMusicLyricsProvider(), new NeteaseLyricsProvider(), new LrclibLyricsProvider());
@@ -80,6 +88,7 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
     private readonly DispatcherTimer _sessionRefreshTimer = new() { Interval = TimeSpan.FromSeconds(1) };
 
     private IPlaybackSourcePolicy _sourcePolicy = PlaybackSourceRegistry.ResolveByKey(PlaybackSourceIds.AutoFallback);
+    private IPlaybackSourceAdapter _sourceAdapter = PlaybackSourceRegistry.ResolveAdapterByKey(PlaybackSourceIds.AutoFallback);
 
     private PlaybackPositionTracker _positionTracker = new(PlaybackTimingPolicy.Default, PlaybackSwitchPolicy.Default);
 
@@ -145,6 +154,10 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
         _lastNoSessionStatus = null;
         _selectedSessionId = selected.Descriptor.SessionId;
         _sourcePolicy = PlaybackSourceRegistry.ResolveBySession(selected.Descriptor.SourceAppUserModelId);
+        _sourceAdapter = PlaybackSourceRegistry.ResolveAdapterBySession(selected.Descriptor.SourceAppUserModelId);
+        AppLog.Info(
+            $"播放源策略: 模式={_playbackSourceMode} 会话来源={selected.Descriptor.SourceAppUserModelId} " +
+            $"策略={_sourcePolicy.Key}（{_sourcePolicy.DisplayName}）");
 
         _positionTracker = new PlaybackPositionTracker(
             _sourcePolicy.Timing,
@@ -325,14 +338,13 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
 
         _session = session;
         PlaybackState = PlaybackState.Unknown;
+        SetPlaybackCapabilities(new PlaybackCapabilities(false, false, false, false, false));
         _lastTickPositionMs = -1;
         _lastEndTimeMs = -1;
-        IsSwitchingTrack = false;
-        _switchSuspected = false;
+        _switchFsm.Reset();
         _lastPlaybackStatus = null;
         _lastEventPlaybackStatus = null;
         _lastSwitchStartUtcMs = 0;
-        _lastSwitchCompletedAt = -1;
 
         if (_session is null)
         {
@@ -341,8 +353,10 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
             _currentKey = string.Empty;
             _nowPlaying = null;
             _coverKey = string.Empty;
-            _coverLoaded = false;
+            _coverFingerprint = string.Empty;
+            _coverNoValueNotified = false;
             CoverChanged?.Invoke(string.Empty, null);
+            SetPlaybackCapabilities(new PlaybackCapabilities(false, false, false, false, false));
             SessionChanged?.Invoke(false);
             StatusChanged?.Invoke("等待播放音乐…");
             return;
@@ -362,6 +376,7 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
         _session.MediaPropertiesChanged += OnMediaPropertiesChanged;
         _session.TimelinePropertiesChanged += OnTimelinePropertiesChanged;
         _session.PlaybackInfoChanged += OnPlaybackInfoChanged;
+        UpdatePlaybackCapabilities(_session);
 
         // 缓存当前播放状态，供 PlaybackInfoChanged 去重比较
         try
@@ -429,9 +444,9 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
             // 已有歌词（播放中暂停）保持显示，不覆盖。
             if (!IsActuallyPlaying(session))
             {
-                IsSwitchingTrack = false;
+                _switchFsm.Cancel();
                 var idleKey = string.IsNullOrWhiteSpace(title) ? string.Empty : TrackKey.Of(title, artist);
-                _ = RefreshCoverAsync(props, idleKey);
+                _ = RefreshCoverAsync(props, metadata, idleKey);
                 if (Lyrics.Lines.Count == 0)
                     StatusChanged?.Invoke(string.IsNullOrWhiteSpace(title)
                         ? "等待播放音乐…"
@@ -453,7 +468,7 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
             }
 
             var key = TrackKey.Of(title, artist);
-            _ = RefreshCoverAsync(props, key); // 切歌换封面；key 未变时内部直接跳过
+            _ = RefreshCoverAsync(props, metadata, key); // 适配器决定是否重读；公共层负责哈希去重和发布
             if (key == _currentKey)
                 return;
 
@@ -465,6 +480,7 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
                 BeginTrackSwitch("元数据变化");
 
             _currentKey = key;
+            _switchFsm.MarkLoading();
             AppLog.Info($"开始加载歌词: {title} / {artist}");
 
             var result = await LoadLyricsOnceAsync(title, artist);
@@ -474,8 +490,7 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
                 return;
 
             AppLog.Info($"歌词加载完成: {result}");
-            IsSwitchingTrack = false;
-            _lastSwitchCompletedAt = Environment.TickCount;
+            _switchFsm.Complete(Environment.TickCount);
 
             // 歌词已就绪，但 SMTC 的位置快照可能还是切歌前的旧值（新快照未到）：
             // 此时先保留"正在获取歌词…"占位，避免加载完成后出现空白；
@@ -561,8 +576,7 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
     /// showNotFound=false 时 NotFound 不显示（保留"正在获取歌词…"占位，等恢复调度确认）。</summary>
     private void ApplyLoadResult(string key, LyricsLoadResult result, bool showNotFound = true)
     {
-        IsSwitchingTrack = false;
-        _lastSwitchCompletedAt = Environment.TickCount;
+        _switchFsm.Complete(Environment.TickCount);
         TrackLyricsChanged?.Invoke(key, result);
         if (showNotFound || result != LyricsLoadResult.NotFound)
             StatusChanged?.Invoke(StatusTextFor(result));
@@ -725,7 +739,10 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
     /// <summary>
     ///     加载 SMTC 提供的歌曲封面；key 未变不重复加载，无封面/失败发 null 事件。
     /// </summary>
-    private async Task RefreshCoverAsync(GlobalSystemMediaTransportControlsSessionMediaProperties props, string key)
+    private async Task RefreshCoverAsync(
+        GlobalSystemMediaTransportControlsSessionMediaProperties props,
+        PlaybackMetadata metadata,
+        string key)
     {
         if (!_mediaControlsEnabled)
             return;
@@ -733,33 +750,45 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
         if (key != _coverKey)
         {
             _coverKey = key;
-            _coverLoaded = false; // 新歌：封面待加载（QQ 会先推无封面、后推有封面）
+            _coverFingerprint = string.Empty;
+            _coverNoValueNotified = false;
         }
-
-        if (_coverLoaded)
-            return; // 同一首歌封面已成功加载，跳过
 
         try
         {
-            if (props.Thumbnail is null)
+            var result = await _sourceAdapter.GetCoverAsync(
+                new PlaybackCoverRequest(
+                    key,
+                    metadata,
+                    props,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()),
+                CancellationToken.None);
+
+            if (key != _coverKey)
+                return; // 等待期间又切歌，丢弃过期结果
+
+            if (result.Action == PlaybackCoverAction.NoChange)
+                return;
+
+            if (result.Action == PlaybackCoverAction.NoCover)
             {
-                // 本轮无封面：不置 loaded，等后续推送/轮询重试
+                if (_coverNoValueNotified)
+                    return;
+                _coverNoValueNotified = true;
+                _coverFingerprint = string.Empty;
                 CoverChanged?.Invoke(key, null);
                 return;
             }
 
-            using var stream = await props.Thumbnail.OpenReadAsync();
-            if (key != _coverKey)
-                return; // 等待期间又切歌，丢弃过期封面
+            if (result.Data is not { Length: > 0 } bytes)
+                return;
 
-            // 一次性读入内存：SMTC 流可能不支持 Seek
-            using var ms = new MemoryStream();
-            await stream.AsStreamForRead().CopyToAsync(ms);
-            ms.Position = 0;
+            var fingerprint = Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(bytes));
+            if (string.Equals(fingerprint, _coverFingerprint, StringComparison.Ordinal))
+                return;
 
-            // 封面字节指纹：排查"封面与曲目不符"类问题（部分播放器切歌后缩略图迟到/复用旧图）
-            AppLog.Debug("封面加载: key={Key} 字节={Bytes} 哈希={Hash}",
-                key, ms.Length, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(ms.ToArray()))[..8]);
+            using var ms = new MemoryStream(bytes, writable: false);
 
             // WPF 的 BitmapImage/BitmapDecoder 解码 JPEG 时会读取内嵌 ICC 色彩配置，
             // 个别封面的 ICC 损坏会导致 IOException"无法从流中读取"。
@@ -775,7 +804,9 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
                     Int32Rect.Empty,
                     BitmapSizeOptions.FromWidthAndHeight(96, 96));
                 source.Freeze();
-                _coverLoaded = true;
+                _coverFingerprint = fingerprint;
+                _coverNoValueNotified = false;
+                AppLog.Debug($"封面加载: 策略={_sourceAdapter.Key} key={key} 字节={bytes.Length} 哈希={fingerprint[..8]}");
                 CoverChanged?.Invoke(key, source);
             }
             finally
@@ -787,8 +818,13 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
         {
             if (key != _coverKey)
                 return; // 过期失败不影响当前封面
+            _sourceAdapter.ResetCoverState(key);
             AppLog.Warn($"封面: 加载失败 key='{key}' [{ex.GetType().Name}] {ex.Message}");
-            CoverChanged?.Invoke(key, null);
+            if (_coverFingerprint.Length == 0 && !_coverNoValueNotified)
+            {
+                _coverNoValueNotified = true;
+                CoverChanged?.Invoke(key, null);
+            }
         }
     }
 
@@ -796,12 +832,12 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
     public void SetMediaControlsEnabled(bool enabled)
     {
         _mediaControlsEnabled = enabled;
-        if (!enabled)
-        {
-            _coverKey = string.Empty;
-            _coverLoaded = false;
-            CoverChanged?.Invoke(string.Empty, null);
-        }
+        if (enabled) return;
+        _sourceAdapter.ResetCoverState(_coverKey);
+        _coverKey = string.Empty;
+        _coverFingerprint = string.Empty;
+        _coverNoValueNotified = false;
+        CoverChanged?.Invoke(string.Empty, null);
     }
 
     /// <summary>媒体区：上一首</summary>
@@ -852,15 +888,12 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
     /// <summary>进入"等待新歌"状态：清显示、记录触发点，并主动轮询媒体属性</summary>
     private void BeginTrackSwitch(string reason)
     {
-        _switchSuspected = false;
-        IsSwitchingTrack = true;
-        _switchKey = _currentKey;
-        _switchStartedAt = Environment.TickCount;
+        _switchFsm.Begin(_currentKey, Environment.TickCount);
         _lastSwitchStartUtcMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         _positionTracker.OnTrackSwitch(_lastSwitchStartUtcMs);
         TrackSwitchStarted?.Invoke();
         StatusChanged?.Invoke("正在获取歌词…");
-        AppLog.Debug($"切歌信号触发（{reason}），等待新歌 key='{_switchKey}'");
+        AppLog.Debug($"切歌信号触发（{reason}），等待新歌 key='{_switchFsm.SwitchKey}'");
         _ = PollForNewTrackAsync();
     }
 
@@ -870,9 +903,9 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
     /// </summary>
     private void SuspectTrackSwitch()
     {
-        if (_switchSuspected)
+        if (_switchFsm.IsSuspected)
             return;
-        _switchSuspected = true;
+        _switchFsm.Suspect();
         AppLog.Debug("位置回退疑似切歌，等待确认（区分拖动进度条）");
         _ = PollForTrackConfirmationAsync();
     }
@@ -887,7 +920,7 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
             for (var i = 0; i < _sourcePolicy.Switch.ConfirmationMaxAttempts; i++)
             {
                 await Task.Delay(_sourcePolicy.Switch.ConfirmationPollIntervalMs);
-                if (!_switchSuspected || _session is null || IsSwitchingTrack)
+                if (!_switchFsm.IsSuspected || _session is null || IsSwitchingTrack)
                     return; // 怀疑被取消 / 会话关闭 / 已被时长变化路径接管
 
                 string? currentKey = null;
@@ -917,7 +950,7 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
 
                     // 同一个新 key 连续稳定读到 → 确认切歌，走完整流程
                     AppLog.Debug("位置回退确认切歌，进入切换流程");
-                    _switchSuspected = false;
+                    _switchFsm.ClearSuspicion();
                     await RefreshTrackAsync();
                     return;
                 }
@@ -932,7 +965,7 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
         }
         finally
         {
-            _switchSuspected = false;
+            _switchFsm.ClearSuspicion();
         }
     }
 
@@ -1032,6 +1065,7 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
             }
 
             var previousEvent = _lastEventPlaybackStatus;
+            UpdatePlaybackCapabilities(session);
             var stateChanged = ApplyPlaybackState(
                 status,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
@@ -1069,10 +1103,10 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
 
             // 停止后恢复播放同一首歌（单曲循环/手动停止再播）：不是切歌，立即恢复正常显示
             if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing &&
-                IsSwitchingTrack && _currentKey == _switchKey && Lyrics.Lines.Count > 0)
+                IsSwitchingTrack && _currentKey == _switchFsm.SwitchKey && Lyrics.Lines.Count > 0)
             {
                 AppLog.Debug("恢复播放同一首歌，取消等待状态");
-                IsSwitchingTrack = false;
+                _switchFsm.Cancel();
                 StatusChanged?.Invoke(string.Empty);
             }
 
@@ -1083,9 +1117,9 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
     /// <summary>刚完成过切歌（2 秒内）：同一轮切歌序列的迟到信号应忽略</summary>
     public bool RecentlySwitched()
     {
-        return _lastSwitchCompletedAt > 0 &&
-               Environment.TickCount - _lastSwitchCompletedAt <
-               _sourcePolicy.Switch.RecentSwitchIgnoreMs;
+        return _switchFsm.RecentlyCompleted(
+            Environment.TickCount,
+            _sourcePolicy.Switch.RecentSwitchIgnoreMs);
     }
 
     /// <summary>
@@ -1110,18 +1144,18 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
         if (!IsSwitchingTrack)
             return;
 
-        var elapsed = Environment.TickCount - _switchStartedAt;
+        var elapsed = _switchFsm.ElapsedMs(Environment.TickCount);
 
         // 新歌已确认（key 已变化）→ 保持占位，等歌词加载完成；
         // 超过 8 秒仍未完成 → 看门狗强制复位，后台加载完成会自行刷新。
-        if (_currentKey != _switchKey)
+        if (_currentKey != _switchFsm.SwitchKey)
         {
             if (elapsed > _sourcePolicy.Switch.SwitchWatchdogMs)
             {
                 AppLog.Warn(
                     "看门狗：歌词加载超时 {TimeoutMs}ms，复位切换状态",
                     _sourcePolicy.Switch.SwitchWatchdogMs);
-                IsSwitchingTrack = false;
+                _switchFsm.Cancel();
                 if (Lyrics.Lines.Count == 0)
                     StatusChanged?.Invoke(string.Empty); // 清掉"正在获取歌词…"占位
             }
@@ -1133,7 +1167,7 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
         if (elapsed > _sourcePolicy.Switch.FalseSwitchRecoveryMs)
         {
             AppLog.Debug("误判恢复：3s 内未确认新歌，恢复正常显示");
-            IsSwitchingTrack = false;
+            _switchFsm.Cancel();
             if (Lyrics.Lines.Count == 0)
                 StatusChanged?.Invoke(string.Empty); // 清掉"正在获取歌词…"占位
         }
@@ -1155,6 +1189,39 @@ public sealed class SmptcSessionService(Dispatcher dispatcher) : IDisposable
     [System.Runtime.InteropServices.DllImport("gdi32.dll")]
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     private static extern bool DeleteObject(IntPtr hObject);
+
+    private void UpdatePlaybackCapabilities(GlobalSystemMediaTransportControlsSession session)
+    {
+        try
+        {
+            var controls = session.GetPlaybackInfo().Controls;
+            SetPlaybackCapabilities(new PlaybackCapabilities(
+                SupportsPrevious: controls.IsPreviousEnabled,
+                SupportsPlayPause: controls.IsPlayEnabled || controls.IsPauseEnabled,
+                SupportsNext: controls.IsNextEnabled,
+                SupportsSeek: controls.IsPlaybackPositionEnabled,
+                ProvidesCover: _sourceAdapter.ProvidesCover));
+        }
+        catch
+        {
+            SetPlaybackCapabilities(_sourcePolicy.Capabilities with
+            {
+                ProvidesCover = _sourceAdapter.ProvidesCover
+            });
+        }
+    }
+
+    private void SetPlaybackCapabilities(PlaybackCapabilities capabilities)
+    {
+        if (Capabilities == capabilities)
+            return;
+
+        Capabilities = capabilities;
+        AppLog.Info(
+            $"播放能力: 上一首={capabilities.SupportsPrevious} 播放暂停={capabilities.SupportsPlayPause} " +
+            $"下一首={capabilities.SupportsNext} 进度跳转={capabilities.SupportsSeek} 封面={capabilities.ProvidesCover}");
+        PlaybackCapabilitiesChanged?.Invoke(capabilities);
+    }
 
     private static PlaybackState MapPlaybackState(GlobalSystemMediaTransportControlsSessionPlaybackStatus status)
     {

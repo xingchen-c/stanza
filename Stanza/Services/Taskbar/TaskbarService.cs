@@ -108,6 +108,7 @@ public sealed class TaskbarService : IDisposable
 
     private bool _isWidgetPresent;
 
+    /// <summary>停止轮询并退订系统显示设置变化事件。</summary>
     public void Dispose()
     {
         _disposed = true;

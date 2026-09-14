@@ -11,10 +11,15 @@ using System.Windows.Threading;
 using Stanza.Models;
 using Stanza.Services;
 using Stanza.Services.Lyrics;
+using Stanza.Services.Playback;
 using Stanza.Services.Taskbar;
 
 namespace Stanza;
 
+/// <summary>
+///     任务栏歌词主窗口：负责窗口定位、命中和交互，消费 SmptcSessionService 的状态与事件，
+///     不直接访问原始 WinRT SMTC 对象。
+/// </summary>
 public partial class MainWindow
 {
     // ---- Win32 窗口样式常量 ----
@@ -73,6 +78,7 @@ public partial class MainWindow
 
     private readonly SmptcSessionService _smtc;
 
+    /// <summary>初始化窗口、服务、事件订阅、ticker 和任务栏调度。</summary>
     public MainWindow()
     {
         InitializeComponent();
@@ -89,6 +95,7 @@ public partial class MainWindow
         _smtc.TrackSwitchStarted += OnTrackSwitchStarted;
         _smtc.TrackLyricsChanged += OnTrackLyricsChanged;
         _smtc.PlaybackStatusChanged += OnServicePlaybackStatus;
+        _smtc.PlaybackCapabilitiesChanged += OnPlaybackCapabilitiesChanged;
         _smtc.CoverChanged += OnCoverChanged;
 
         Loaded += OnLoaded;
@@ -155,7 +162,9 @@ public partial class MainWindow
 
         CoverImage.Source = null;
         // 封面位常驻：会话接入时显示占位（无封面显示音符），断开时收起
-        CoverBorder.Visibility = connected && _showMediaControls ? Visibility.Visible : Visibility.Collapsed;
+        CoverBorder.Visibility = connected && _showMediaControls && _smtc.Capabilities.ProvidesCover
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         LyricViewport.Visibility = Visibility.Visible;
         HoverPanel.Visibility = Visibility.Collapsed;
         _hoverShowing = false;
@@ -199,6 +208,25 @@ public partial class MainWindow
             ? "\uE769"
             : "\uE768";
         PositionCard();
+    }
+
+    /// <summary>播放器运行时能力变化：驱动控制按钮和封面区显隐。</summary>
+    private void OnPlaybackCapabilitiesChanged(PlaybackCapabilities capabilities)
+    {
+        PrevButton.IsEnabled = capabilities.SupportsPrevious;
+        PlayPauseButton.IsEnabled = capabilities.SupportsPlayPause;
+        NextButton.IsEnabled = capabilities.SupportsNext;
+
+        if (!capabilities.ProvidesCover)
+        {
+            CoverImage.Source = null;
+            CoverBorder.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        CoverBorder.Visibility = _showMediaControls
+            ? Visibility.Visible
+            : Visibility.Collapsed;
     }
 
     /// <summary>封面就绪/变化：更新封面显示并重算歌词布局（null = 无封面/失败）</summary>
@@ -865,7 +893,9 @@ public partial class MainWindow
         }
         else
         {
-            CoverBorder.Visibility = Visibility.Visible; // 占位常驻
+            CoverBorder.Visibility = _smtc.Capabilities.ProvidesCover
+                ? Visibility.Visible
+                : Visibility.Collapsed;
         }
 
         ApplyWindowStyles(); // 更新点击穿透需要重设窗口扩展样式
@@ -1017,6 +1047,7 @@ public partial class MainWindow
         ShowLyricLine(lines[index], positionMs);
     }
 
+    /// <summary>窗口关闭时停止定时器、取消服务事件并释放托盘和任务栏资源。</summary>
     protected override void OnClosed(EventArgs e)
     {
         RenderCapability.TierChanged -= OnRenderTierChanged; // 退订静态事件，避免常驻引用

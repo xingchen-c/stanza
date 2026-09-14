@@ -8,12 +8,13 @@ using Stanza.Services;
 namespace Stanza;
 
 /// <summary>
-///     Interaction logic for App.xaml
+///     应用入口：数据目录迁移、全局异常兜底、单实例保护和日志生命周期。
 /// </summary>
 public partial class App
 {
     private static Mutex? _singleInstanceMutex;
 
+    /// <summary>启动入口：迁移旧数据、注册异常兜底并建立单实例互斥体。</summary>
     protected override void OnStartup(StartupEventArgs e)
     {
         // 一次性迁移旧版数据目录（改名前叫 FluentLyrics），必须赶在 AppLog 首次建目录之前
@@ -37,6 +38,7 @@ public partial class App
         base.OnStartup(e);
     }
 
+    /// <summary>退出清理：释放单实例互斥体并冲刷异步日志。</summary>
     protected override void OnExit(ExitEventArgs e)
     {
         try

@@ -2,6 +2,10 @@
 
 namespace Stanza.Services.Playback.Policies;
 
+/// <summary>
+///     QQ 音乐桌面版策略：时间线完整可用，支持 Position 外推、时长变化早期切歌，
+///     并使用 Stopped / Changing 信号区分切歌序列。
+/// </summary>
 internal sealed class QqMusicPlaybackSourcePolicy : IPlaybackSourcePolicy
 {
     private static readonly string[] QqAumids =
@@ -38,6 +42,7 @@ internal sealed class QqMusicPlaybackSourcePolicy : IPlaybackSourcePolicy
         AllowFreshSnapshotExtrapolation: true,
         FreshSnapshotMaxAgeMs: 2000,
         AllowWallClockFallback: true,
+        TrustPositionWhenPaused: true,
         PauseSeekThresholdMs: 2000);
 
     public PlaybackCapabilities Capabilities { get; } = new(

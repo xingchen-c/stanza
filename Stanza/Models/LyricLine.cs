@@ -11,7 +11,10 @@ public sealed class LyricLine(
     string? translation = null,
     List<LyricWord>? words = null)
 {
+    /// <summary>该行开始时间（毫秒）。</summary>
     public int StartTime { get; } = startTime;
+
+    /// <summary>该行正文。</summary>
     public string Text { get; } = text;
 
     /// <summary>行结束时间（毫秒）；QQ 歌词一般都有，个别行可能缺失</summary>

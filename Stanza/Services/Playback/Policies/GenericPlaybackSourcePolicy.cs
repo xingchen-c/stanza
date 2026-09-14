@@ -3,6 +3,9 @@ using Stanza.Models;
 namespace Stanza.Services.Playback.Policies;
 
 /// <summary>未知播放器的保守策略，沿用当前公共默认行为。</summary>
+/// <summary>
+///     未知播放器的保守策略：沿用标准 SMTC 时间线行为，不假设任何专有事件序列。
+/// </summary>
 internal sealed class GenericPlaybackSourcePolicy : IPlaybackSourcePolicy
 {
     public string Key => PlaybackSourceIds.AutoFallback;

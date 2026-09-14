@@ -18,9 +18,12 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
     private const double ArtistWeight = 0.15;
     private const double AlbumWeight = 0.05;
     private const double DurationTauMs = 8000; // 时长接近度衰减尺度（8s 处 0.5）
+    internal const double ArtistMatchThreshold = 0.6; // 完全相等或至少一位歌手交集
 
+    /// <inheritdoc />
     public string Key => "QQ";
 
+    /// <inheritdoc />
     public string Name => "QQ 音乐";
 
     /// <summary>
@@ -79,7 +82,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
             return artist;
 
         var parts = artist
-            .Split(['/', ',', '、'], StringSplitOptions.RemoveEmptyEntries)
+            .Split(ArtistSeparators, StringSplitOptions.RemoveEmptyEntries)
             .Select(s => s.Trim())
             .Where(s => s.Length > 0)
             .ToArray();
@@ -122,6 +125,7 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
         return tail.Length > 0 ? tail : null;
     }
 
+    /// <inheritdoc />
     public async Task<LyricsResult> LoadAsync(string title, string artist, int? durationMs)
     {
         if (string.IsNullOrWhiteSpace(title))
@@ -140,15 +144,27 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
             //    排序分两档：先按「歌手精确度」降序（同名不同歌手时，精确歌手恒优先，
             //    避免错歌手凭时长凑巧接近反超），同档内再按综合分降序选版本，
             //    最后保持搜索原顺序避免抖动。
-            var ranked = results
+            var scored = results
                 .Where(r => TitlesRelated(r.Title ?? title, title)) // 硬门槛：歌名完全无关的不进打分
                 .Select((r, index) => (Candidate: r, Index: index, Score: ComputeMatchScore(
                     r.Title, r.Artists, r.Album, r.DurationMs, r.MatchType,
-                    title, artist, durationMs)))
-                .OrderByDescending(x => ArtistRankKey(x.Candidate.Artists, artist))
+                    title, artist, durationMs),
+                    ArtistRank: ArtistRankKey(r.Artists, artist)))
+                .OrderByDescending(x => x.ArtistRank)
                 .ThenByDescending(x => x.Score)
                 .ThenBy(x => x.Index)
                 .ToList();
+
+            var hasExpectedArtist = !string.IsNullOrWhiteSpace(artist);
+            if (hasExpectedArtist && !scored.Any(x => x.ArtistRank >= ArtistMatchThreshold))
+            {
+                AppLog.Info($"QQ 无歌手匹配候选，拒绝跨歌手自动命中: '{title}' / '{artist}'，歌名相关候选={scored.Count}");
+                return new LyricsResult(LyricsLoadResult.NotFound, []);
+            }
+
+            var ranked = hasExpectedArtist
+                ? scored.Where(x => x.ArtistRank >= ArtistMatchThreshold).ToList()
+                : scored;
 
             // 诊断：匹配输入 Info 落盘（Release 可见）；候选分布 Debug（调试器/DEBUG 包可见，
             // 偶发匹配错时切 Debug 打包或调试器里看完整候选分布）
@@ -259,11 +275,13 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
     private static HashSet<string> SplitArtists(string normalized)
     {
         return normalized
-            .Split(['/', ',', '、'], StringSplitOptions.RemoveEmptyEntries)
+            .Split(ArtistSeparators, StringSplitOptions.RemoveEmptyEntries)
             .Select(s => s.Trim())
             .Where(s => s.Length > 0)
             .ToHashSet();
     }
+
+    private static readonly char[] ArtistSeparators = ['/', ',', '，', '、', '&', ';', '；'];
 
     /// <summary>候选排序主键：歌手精确度降序值（精确 1.0 &gt; 部分交集 0.6 &gt; 无交集 0.2 &gt; 缺失 0）。
     ///     让「同名不同歌手」的错歌手不会因时长凑巧接近而反超精确歌手。</summary>
@@ -347,16 +365,35 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
         try
         {
             var results = await SearchWithTitleFallbackAsync(title, artist, durationMs);
+            var hasExpectedArtist = !string.IsNullOrWhiteSpace(artist);
             return results
-                .Select(r => new LyricCandidate(
-                    Key,
-                    Name,
-                    r.Id,
-                    r.Title ?? title,
-                    r.Artists is { Length: > 0 } ? string.Join(", ", r.Artists) : artist,
-                    r.Album,
-                    r.DurationMs,
-                    r.MatchType?.ToString()))
+                .Where(r => TitlesRelated(r.Title ?? title, title))
+                .Select((r, index) => new
+                {
+                    Candidate = new LyricCandidate(
+                        Key,
+                        Name,
+                        r.Id,
+                        r.Title ?? title,
+                        r.Artists is { Length: > 0 } ? string.Join(", ", r.Artists) : artist,
+                        r.Album,
+                        r.DurationMs,
+                        r.MatchType?.ToString())
+                    {
+                        MatchScore = ComputeMatchScore(
+                            r.Title, r.Artists, r.Album, r.DurationMs, r.MatchType,
+                            title, artist, durationMs),
+                        ArtistMatched = hasExpectedArtist
+                            ? ArtistRankKey(r.Artists, artist) >= ArtistMatchThreshold
+                            : null
+                    },
+                    Index = index,
+                    ArtistRank = ArtistRankKey(r.Artists, artist)
+                })
+                .OrderByDescending(x => x.ArtistRank)
+                .ThenByDescending(x => x.Candidate.MatchScore)
+                .ThenBy(x => x.Index)
+                .Select(x => x.Candidate)
                 .ToList();
         }
         catch (Exception ex)
@@ -465,7 +502,14 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
     {
         var a = Normalize(lyricsTitle);
         var b = Normalize(expectedTitle);
-        return a.Length > 0 && b.Length > 0 && (a.Contains(b) || b.Contains(a));
+        if (a.Length == 0 || b.Length == 0)
+            return false;
+        if (a == b)
+            return true;
+
+        // 单字包含会把「星」吸到「星炬不熄」、「花」吸到「碎花」等大量无关歌曲；
+        // 单字只在完全相等时成立，双字及以上才允许包含匹配。
+        return Math.Min(a.Length, b.Length) >= 2 && (a.Contains(b) || b.Contains(a));
     }
 
     /// <summary>规范化：去空白、转小写，便于包含判断</summary>

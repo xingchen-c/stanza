@@ -160,7 +160,18 @@ public sealed class LyricsService
                 AppLog.Error($"候选获取失败 {provider.Name}", ex);
             }
 
-        return list;
+        return list
+            .Select((candidate, index) => (Candidate: candidate, Index: index))
+            .OrderByDescending(x => x.Candidate.ArtistMatched switch
+            {
+                true => 2,
+                null => 1,
+                false => 0
+            })
+            .ThenByDescending(x => x.Candidate.MatchScore)
+            .ThenBy(x => x.Index)
+            .Select(x => x.Candidate)
+            .ToList();
     }
 
     /// <summary>按用户选中的候选直接取词（跳过自动匹配），并更新当前歌词行缓存</summary>
@@ -184,6 +195,7 @@ public sealed class LyricsService
         }
     }
 
+    /// <summary>按播放位置获取当前歌词行索引。</summary>
     public int GetLineIndexAt(int positionMs) => GetLineIndexAt(_lines, positionMs);
 
     /// <summary>

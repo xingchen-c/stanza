@@ -6,12 +6,19 @@ using Lyricify.Lyrics.Searchers;
 namespace Stanza.Services.Lyrics;
 
 /// <summary>LRCLIB 歌词源（兜底）：搜索 → 按 ID 取 LRC → 解析成带时间轴的行</summary>
+/// <summary>
+///     LRCLIB 歌词源：作为 QQ / 网易云之后的通用兜底。
+///     搜索完成后仍会执行歌名相关性和歌手匹配校验，避免返回同名不同歌手的歌词。
+/// </summary>
 public sealed class LrclibLyricsProvider : ILyricsProvider
 {
+    /// <inheritdoc />
     public string Key => "LRCLIB";
 
+    /// <inheritdoc />
     public string Name => "LRCLIB";
 
+    /// <inheritdoc />
     public async Task<LyricsResult> LoadAsync(string title, string artist, int? durationMs)
     {
         if (string.IsNullOrWhiteSpace(title))
@@ -30,6 +37,17 @@ public sealed class LrclibLyricsProvider : ILyricsProvider
             var searchResult = await SearcherHelper.LRCLIBSearcher.SearchForResult(metadata);
             if (searchResult is not LRCLIBSearchResult lrclib)
                 return new LyricsResult(LyricsLoadResult.NotFound, []);
+
+            if (!QqMusicLyricsProvider.TitlesRelated(lrclib.Title ?? title, title))
+                return new LyricsResult(LyricsLoadResult.NotFound, []);
+
+            if (!string.IsNullOrWhiteSpace(artist) &&
+                QqMusicLyricsProvider.ArtistRankKey(lrclib.Artists, artist) <
+                QqMusicLyricsProvider.ArtistMatchThreshold)
+            {
+                AppLog.Info($"LRCLIB 无歌手匹配候选，拒绝跨歌手自动命中: '{title}' / '{artist}' / 候选歌手='{string.Join(", ", lrclib.Artists ?? [])}'");
+                return new LyricsResult(LyricsLoadResult.NotFound, []);
+            }
 
             // 2. 用歌曲 Id 获取歌词
             var response = await ProviderHelper.LRCLIBApi.GetById(lrclib.Id);
