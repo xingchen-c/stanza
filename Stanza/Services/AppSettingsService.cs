@@ -12,6 +12,7 @@ public static class AppSettingsService
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Stanza");
 
     private static readonly string SettingsPath = Path.Combine(SettingsDir, "settings.json");
+    private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
 
     /// <summary>读取设置；文件缺失或损坏时返回默认值</summary>
     public static AppSettings Load()
@@ -36,7 +37,7 @@ public static class AppSettingsService
         try
         {
             Directory.CreateDirectory(SettingsDir);
-            var json = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
+            var json = JsonSerializer.Serialize(settings, IndentedJson);
             // 先写临时文件再替换，避免写一半崩溃留下损坏配置（与歌词缓存一致）
             var tmp = SettingsPath + ".tmp";
             File.WriteAllText(tmp, json);

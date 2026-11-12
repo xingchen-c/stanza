@@ -251,7 +251,7 @@ public class TrackSwitchStateMachineTests
 
         Assert.Equal(TrackSwitchState.Idle, fsm.State);
         Assert.Equal(string.Empty, fsm.SwitchKey);
-        Assert.Equal(-1, fsm.LastCompletedAt);
+        Assert.False(fsm.RecentlyCompleted(2000, 1000));
         Assert.False(fsm.IsSwitching);
     }
 }
@@ -274,10 +274,11 @@ public class PlaybackPositionTrackerTests
     }
 
     [Fact]
-    public void Track_switch_skips_stale_snapshot_inside_window()
+    public void Track_switch_uses_wall_clock_when_new_track_is_playing()
     {
         var tracker = CreateTracker();
         tracker.OnTrackSwitch(10_000);
+        tracker.OnTrackConfirmed();
 
         var result = tracker.Sample(
             rawPositionMs: 1234,
@@ -285,8 +286,89 @@ public class PlaybackPositionTrackerTests
             isPlaying: true,
             nowUtcMs: 10_500);
 
+        Assert.True(result.ShouldRender);
+        Assert.Equal(500, result.PositionMs);
+    }
+
+    [Fact]
+    public void 未确认新歌时切歌旧快照应冻结而非推回开头()
+    {
+        var tracker = CreateTracker();
+        tracker.OnTrackSwitch(10_000);
+
+        var result = tracker.Sample(
+            rawPositionMs: 200_000,
+            snapshotUtcMs: 9_200,
+            isPlaying: true,
+            nowUtcMs: 10_500);
+
         Assert.False(result.ShouldRender);
         Assert.Contains("旧快照", result.SkipReason);
+    }
+
+    [Fact]
+    public void 确认新歌后切歌旧快照应改用墙钟()
+    {
+        var tracker = CreateTracker();
+        tracker.OnTrackSwitch(10_000);
+        tracker.OnTrackConfirmed();
+
+        var result = tracker.Sample(
+            rawPositionMs: 200_000,
+            snapshotUtcMs: 9_200,
+            isPlaying: true,
+            nowUtcMs: 10_500);
+
+        Assert.True(result.ShouldRender);
+        Assert.Equal(500, result.PositionMs);
+    }
+
+    [Fact]
+    public void 恢复播放边界不得清除切歌旧快照闸门()
+    {
+        var tracker = CreateTracker();
+        tracker.OnTrackSwitch(10_000);
+        tracker.OnResumeBoundary(10_200);
+
+        var result = tracker.Sample(
+            rawPositionMs: 200_000,
+            snapshotUtcMs: 9_200,
+            isPlaying: true,
+            nowUtcMs: 10_200);
+
+        Assert.NotEqual(200_000, result.PositionMs);
+    }
+
+    [Fact]
+    public void 恢复当拍应落到锚点而非原始快照位置()
+    {
+        var tracker = CreateTracker();
+        tracker.OnTrackSwitch(10_000, initialPositionMs: 45_000);
+        tracker.Sample(45_000, 10_050, isPlaying: true, nowUtcMs: 10_100);
+        tracker.Sample(45_100, 10_150, isPlaying: false, nowUtcMs: 10_200);
+        tracker.OnResumeBoundary(15_000);
+
+        var same = tracker.Sample(45_100, 10_150, isPlaying: true, nowUtcMs: 15_000);
+        Assert.Equal(45_100, same.PositionMs);
+
+        var later = tracker.Sample(45_100, 10_150, isPlaying: true, nowUtcMs: 15_500);
+        Assert.Equal(45_600, later.PositionMs);
+    }
+
+    [Fact]
+    public void Initial_session_uses_current_position_instead_of_wall_clock_from_zero()
+    {
+        var tracker = CreateTracker();
+        tracker.OnTrackSwitch(10_000, initialPositionMs: 60_000);
+
+        var result = tracker.Sample(
+            rawPositionMs: 60_000,
+            snapshotUtcMs: 9_000,
+            isPlaying: true,
+            nowUtcMs: 10_500);
+
+        Assert.True(result.ShouldRender);
+        Assert.Equal(60_500, result.PositionMs);
     }
 
     [Fact]
@@ -320,11 +402,27 @@ public class PlaybackPositionTrackerTests
     }
 
     [Fact]
+    public void Resume_continues_from_paused_position_before_new_snapshot()
+    {
+        var tracker = CreateTracker();
+        tracker.OnTrackSwitch(10_000);
+        tracker.Sample(5000, 10_000, isPlaying: true, nowUtcMs: 10_100);
+        tracker.Sample(5000, 10_000, isPlaying: false, nowUtcMs: 10_200);
+        tracker.OnResumeBoundary(10_300);
+
+        var result = tracker.Sample(5000, 10_000, isPlaying: true, nowUtcMs: 10_800);
+
+        Assert.True(result.ShouldRender);
+        Assert.Equal(5600, result.PositionMs);
+    }
+
+    [Fact]
     public void Netease_track_switch_starts_wall_clock_position_immediately()
     {
         var policy = PlaybackSourceRegistry.ResolveByKey(PlaybackSourceIds.NetEase);
         var tracker = new PlaybackPositionTracker(policy.Timing, policy.Switch);
         tracker.OnTrackSwitch(10_000);
+        tracker.OnTrackConfirmed();
 
         var result = tracker.Sample(
             rawPositionMs: 0,
@@ -394,9 +492,12 @@ public class LyricCandidateTests
     [Fact]
     public async Task Candidate_list_puts_artist_match_before_higher_scored_mismatch()
     {
-        var service = new LyricsService(new FakeCandidateProvider());
+        var service = new LyricsService(
+            new MemoryLyricsCacheStore(),
+            new FakeCandidateProvider());
 
-        var candidates = await service.GetCandidatesAsync("歌曲", "正确歌手", 1000);
+        var candidates = await service.GetCandidatesAsync(
+            new LyricsQuery("歌曲", "正确歌手", 1000));
 
         Assert.Equal("正确歌手", candidates[0].Artist);
         Assert.True(candidates[0].ArtistMatched);
@@ -409,20 +510,20 @@ public class LyricCandidateTests
         public string Key => "Fake";
         public string Name => "测试源";
 
-        public Task<LyricsResult> LoadAsync(string title, string artist, int? durationMs)
+        public Task<LyricsResult> LoadAsync(LyricsQuery query)
             => Task.FromResult(new LyricsResult(LyricsLoadResult.NotFound, []));
 
         public Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(
-            string title, string artist, int? durationMs)
+            LyricsQuery query)
         {
             IReadOnlyList<LyricCandidate> result =
             [
-                new(Key, Name, "wrong", title, "错误歌手", null, null, "Perfect")
+                new(Key, Name, "wrong", query.Title, "错误歌手", null, null, "Perfect")
                 {
                     MatchScore = 0.95,
                     ArtistMatched = false
                 },
-                new(Key, Name, "right", title, "正确歌手", null, null, "Low")
+                new(Key, Name, "right", query.Title, "正确歌手", null, null, "Low")
                 {
                     MatchScore = 0.50,
                     ArtistMatched = true
@@ -430,5 +531,41 @@ public class LyricCandidateTests
             ];
             return Task.FromResult(result);
         }
+    }
+
+    private sealed class MemoryLyricsCacheStore : ILyricsCacheStore
+    {
+        private readonly Dictionary<string, (LyricsLoadResult Status, List<LyricLine> Lines)> _items = [];
+
+        public void Initialize()
+        {
+        }
+
+        public bool TryGet(
+            string key,
+            out LyricsLoadResult status,
+            out List<LyricLine> lines)
+        {
+            if (_items.TryGetValue(key, out var item))
+            {
+                status = item.Status;
+                lines = [.. item.Lines];
+                return true;
+            }
+
+            status = LyricsLoadResult.NotFound;
+            lines = [];
+            return false;
+        }
+
+        public void Put(
+            string key,
+            LyricsLoadResult status,
+            IReadOnlyList<LyricLine> lines)
+        {
+            _items[key] = (status, [.. lines]);
+        }
+
+        public void Clear() => _items.Clear();
     }
 }

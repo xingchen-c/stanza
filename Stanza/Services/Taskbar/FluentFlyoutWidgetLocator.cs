@@ -1,6 +1,6 @@
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using System.Text;
+using Stanza.Interop;
 using Stanza.Models;
 
 namespace Stanza.Services.Taskbar;
@@ -26,15 +26,15 @@ public sealed class FluentFlyoutWidgetLocator : ITaskbarWidgetLocator
     {
         foreach (var hwnd in FindFluentFlyoutTaskbarWindows(trayHwnd))
         {
-            if (!IsWindowVisible(hwnd)) // 组件被隐藏时视为不存在
+            if (!NativeMethods.IsWindowVisible(hwnd)) // 组件被隐藏时视为不存在
                 continue;
 
-            var rgn = CreateRectRgn(0, 0, 0, 0);
+            var rgn = NativeMethods.CreateRectRgn(0, 0, 0, 0);
             try
             {
-                if (GetWindowRgn(hwnd, rgn) == 0) // ERROR：窗口没有设置裁剪区域
+                if (NativeMethods.GetWindowRgn(hwnd, rgn) == 0) // ERROR：窗口没有设置裁剪区域
                     continue;
-                if (GetRgnBox(rgn, out var box) == 0)
+                if (NativeMethods.GetRgnBox(rgn, out var box) == 0)
                     continue;
 
                 // 暂停/恢复/切歌的过渡瞬间，裁剪区域可能短暂铺满整个任务栏，
@@ -43,7 +43,7 @@ public sealed class FluentFlyoutWidgetLocator : ITaskbarWidgetLocator
                     continue;
 
                 // 区域坐标相对窗口左上角；窗口铺满任务栏，加上窗口屏幕原点即绝对坐标
-                GetWindowRect(hwnd, out var winRect);
+                NativeMethods.GetWindowRect(hwnd, out var winRect);
                 return new PixelRect(
                     winRect.Left + box.Left,
                     winRect.Top + box.Top,
@@ -52,42 +52,12 @@ public sealed class FluentFlyoutWidgetLocator : ITaskbarWidgetLocator
             }
             finally
             {
-                DeleteObject(rgn);
+                NativeMethods.DeleteObject(rgn);
             }
         }
 
         return null;
     }
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsWindowVisible(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc callback, IntPtr lParam);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern int GetClassName(IntPtr hWnd, StringBuilder className, int maxCount);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetWindowRect(IntPtr hWnd, out Rect rect);
-
-    [DllImport("gdi32.dll")]
-    private static extern IntPtr CreateRectRgn(int left, int top, int right, int bottom);
-
-    [DllImport("gdi32.dll")]
-    private static extern bool DeleteObject(IntPtr hObject);
-
-    [DllImport("user32.dll")]
-    private static extern int GetWindowRgn(IntPtr hWnd, IntPtr hRgn);
-
-    [DllImport("gdi32.dll")]
-    private static extern int GetRgnBox(IntPtr hRgn, out Rect rect);
 
     /// <summary>在任务栏子窗口中找 FluentFlyout 的宿主窗口（类名 HwndWrapper[FluentFlyout...）</summary>
     private static List<IntPtr> FindFluentFlyoutTaskbarWindows(IntPtr trayHwnd)
@@ -97,14 +67,16 @@ public sealed class FluentFlyoutWidgetLocator : ITaskbarWidgetLocator
         if (pids.Count == 0 || trayHwnd == IntPtr.Zero)
             return result;
 
-        EnumChildWindows(trayHwnd, (h, _) =>
+        NativeMethods.EnumChildWindows(trayHwnd, (h, _) =>
         {
-            GetWindowThreadProcessId(h, out var pid);
+            if (NativeMethods.GetWindowThreadProcessId(h, out var pid) == 0)
+                return true;
             if (!pids.Contains((int)pid))
                 return true;
 
             var className = new StringBuilder(128);
-            GetClassName(h, className, 128);
+            if (NativeMethods.GetClassName(h, className, 128) == 0)
+                return true;
             if (className.ToString().StartsWith("HwndWrapper[FluentFlyout", StringComparison.OrdinalIgnoreCase))
                 result.Add(h);
             return true;
@@ -119,8 +91,8 @@ public sealed class FluentFlyoutWidgetLocator : ITaskbarWidgetLocator
         try
         {
             foreach (var name in ComponentProcessNames)
-            foreach (var process in Process.GetProcessesByName(name))
-                ids.Add(process.Id);
+                foreach (var process in Process.GetProcessesByName(name))
+                    ids.Add(process.Id);
         }
         catch
         {
@@ -130,14 +102,4 @@ public sealed class FluentFlyoutWidgetLocator : ITaskbarWidgetLocator
         return ids;
     }
 
-    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct Rect
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-    }
 }

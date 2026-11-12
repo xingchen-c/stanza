@@ -1,84 +1,216 @@
 using System.Windows;
+using System.Windows.Controls;
 using Stanza.Models;
 
 namespace Stanza;
 
-/// <summary>歌词候选选择窗口：列出可选的歌词版本，用户挑一个应用</summary>
+/// <summary>歌词候选选择窗口：查询和应用始终绑定打开窗口时的曲目。</summary>
 public partial class LyricsPickerWindow : Window
 {
-    private readonly IReadOnlyList<LyricCandidate> _candidates;
+    private readonly LyricsSelectionContext _context;
+    private readonly Func<LyricsSelectionContext, CancellationToken, Task<IReadOnlyList<LyricCandidate>>> _search;
+    private readonly Func<LyricsSelectionContext, LyricCandidate, CancellationToken, Task<bool>> _apply;
+    private readonly Func<LyricsSelectionContext, bool> _isCurrent;
+    private readonly CancellationTokenSource _cancellation = new();
+    private IReadOnlyList<LyricCandidate> _candidates = [];
+    private bool _busy;
+    private bool _closed;
+    private bool _stale;
+    private bool _loaded;
 
-    /// <summary>用户选中的候选（DialogResult=true 时有效）</summary>
-    public LyricCandidate? SelectedCandidate { get; private set; }
-
-    /// <summary>用候选列表初始化选择窗口；空列表时禁用应用按钮。</summary>
-    public LyricsPickerWindow(IReadOnlyList<LyricCandidate> candidates)
+    public LyricsPickerWindow(
+        LyricsSelectionContext context,
+        Func<LyricsSelectionContext, CancellationToken, Task<IReadOnlyList<LyricCandidate>>> search,
+        Func<LyricsSelectionContext, LyricCandidate, CancellationToken, Task<bool>> apply,
+        Func<LyricsSelectionContext, bool> isCurrent)
     {
         InitializeComponent();
-        _candidates = candidates;
-
-        if (candidates.Count == 0)
+        _context = context;
+        _search = search;
+        _apply = apply;
+        _isCurrent = isCurrent;
+        TrackText.Text = $"{context.Query.Title} - {context.Query.Artist}";
+        Loaded += async (_, _) => await LoadCandidatesAsync();
+        Closed += (_, _) =>
         {
-            StatusText.Text = "没有可选的歌词候选（当前歌曲可能搜不到多个版本）。";
-            ApplyButton.IsEnabled = false;
-            return;
-        }
-
-        var views = candidates.Select(ToView).ToList();
-        CandidateList.ItemsSource = views;
-        CandidateList.SelectedIndex = 0;
+            _closed = true;
+            _cancellation.Cancel();
+            _cancellation.Dispose();
+        };
     }
 
-    /// <summary>匹配度转中文</summary>
-    private static string FormatMatchType(string? matchType)
+    /// <summary>由主窗口已有轮询检查；失效的列表只能关闭后重新打开。</summary>
+    internal void RefreshTrackContext()
+    {
+        if (_closed || _stale || _isCurrent(_context))
+            return;
+
+        _stale = true;
+        _cancellation.Cancel();
+        StatusText.Text = "曲目已变化，请关闭此窗口后重新打开歌词选择。";
+        UpdateControls();
+    }
+
+    private async Task LoadCandidatesAsync()
+    {
+        RefreshTrackContext();
+        if (_busy || _closed || _stale)
+            return;
+
+        _busy = true;
+        StatusText.Text = "正在搜索歌词版本…";
+        UpdateControls();
+        try
+        {
+            var candidates = await _search(_context, _cancellation.Token);
+            RefreshTrackContext();
+            if (_closed || _stale)
+                return;
+
+            _candidates = candidates;
+            _loaded = true;
+            RefreshCandidates();
+        }
+        catch (OperationCanceledException) when (_closed || _stale || _cancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception)
+        {
+            if (!_closed && !_stale)
+                StatusText.Text = "搜索失败，请点击“重新搜索”重试。";
+        }
+        finally
+        {
+            _busy = false;
+            if (!_closed)
+                UpdateControls();
+        }
+    }
+
+    private void RefreshCandidates()
+    {
+        if (_stale || !_loaded)
+            return;
+
+        var previous = (CandidateList.SelectedItem as CandidateView)?.Candidate;
+        var candidates = FilterCandidates(_candidates, ShowAllCheckBox.IsChecked == true);
+        var views = candidates.Select(ToView).ToList();
+        CandidateList.ItemsSource = views;
+        CandidateList.SelectedItem = views.FirstOrDefault(view => view.Candidate == previous);
+        if (CandidateList.SelectedIndex < 0 && views.Count > 0)
+            CandidateList.SelectedIndex = 0;
+
+        StatusText.Text = candidates.Count == 0
+            ? _candidates.Count == 0
+                ? "暂未获取到候选，可重新搜索。"
+                : "未找到歌名匹配的候选，可勾选“显示全部搜索结果”查找。"
+            : $"找到 {candidates.Count} 个歌词版本，选择后点击应用。";
+        UpdateControls();
+    }
+
+    /// <summary>只消费匹配链路的结论；无同歌手结果时保留别名或信息缺失的纠错入口。</summary>
+    internal static IReadOnlyList<LyricCandidate> FilterCandidates(
+        IReadOnlyList<LyricCandidate> candidates, bool showAll)
+    {
+        if (showAll)
+            return candidates;
+
+        var related = candidates.Where(candidate => candidate.TitleMatched != false).ToList();
+        return related.Any(candidate => candidate.ArtistMatched == true)
+            ? related.Where(candidate => candidate.ArtistMatched != false).ToList()
+            : related;
+    }
+
+    internal static string FormatMatchType(string? matchType)
     {
         return matchType?.ToLowerInvariant() switch
         {
             "perfect" => "完美匹配",
-            "prettyhigh" => "匹配度高",
+            "prettyhigh" or "veryhigh" => "匹配度很高",
             "high" => "匹配度高",
             "medium" => "匹配度中",
             "low" => "匹配度低",
-            "unknown" => "匹配度未知",
-            null or "" => "匹配度未知",
+            "verylow" => "匹配度很低",
+            "nomatch" => "不匹配",
+            "unknown" or null or "" => "匹配度未知",
             _ => $"匹配度 {matchType}"
         };
     }
 
-    /// <summary>候选展示：主行 歌名-歌手，副行 专辑 · 时长 · 匹配度</summary>
-    private static CandidateView ToView(LyricCandidate c)
+    private static CandidateView ToView(LyricCandidate candidate)
     {
-        var parts = new List<string>();
-        if (!string.IsNullOrWhiteSpace(c.Album))
-            parts.Add(c.Album);
-        if (c.DurationMs is { } ms)
-            parts.Add($"{ms / 60000}:{ms % 60000 / 1000:00}");
-        if (c.MatchScore > 0)
-            parts.Add($"综合匹配 {c.MatchScore * 100:F0}%");
-        if (c.ArtistMatched == false)
+        var parts = new List<string> { candidate.SourceName };
+        if (candidate.TitleMatched == false)
+            parts.Add("歌名不一致");
+        if (candidate.ArtistMatched == false)
             parts.Add("歌手可能不一致");
-        parts.Add(FormatMatchType(c.MatchType));
-
-        return new CandidateView(
-            $"{c.Title} - {c.Artist}",
-            string.Join(" · ", parts),
-            c);
+        parts.Add(FormatMatchType(candidate.MatchType));
+        if (candidate.MatchScore > 0)
+            parts.Add($"综合匹配 {candidate.MatchScore * 100:F0}%");
+        if (candidate.DurationMs is { } ms)
+            parts.Add($"{ms / 60000}:{ms % 60000 / 1000:00}");
+        if (!string.IsNullOrWhiteSpace(candidate.Album))
+            parts.Add(candidate.Album);
+        return new CandidateView($"{candidate.Title} - {candidate.Artist}", string.Join(" · ", parts), candidate);
     }
 
-    private void Apply_Click(object sender, RoutedEventArgs e)
+    private async void Apply_Click(object sender, RoutedEventArgs e)
     {
-        if (CandidateList.SelectedIndex < 0 || CandidateList.SelectedIndex >= _candidates.Count)
+        RefreshTrackContext();
+        if (_busy || _closed || _stale || CandidateList.SelectedItem is not CandidateView view)
             return;
 
-        SelectedCandidate = ((CandidateView)CandidateList.SelectedItem).Candidate;
-        DialogResult = true;
+        _busy = true;
+        StatusText.Text = "正在应用所选歌词…";
+        UpdateControls();
+        try
+        {
+            var applied = await _apply(_context, view.Candidate, _cancellation.Token);
+            RefreshTrackContext();
+            if (_closed || _stale)
+                return;
+
+            if (applied)
+                DialogResult = true;
+            else
+                StatusText.Text = "所选版本未能应用，请换一个版本或重试。";
+        }
+        catch (OperationCanceledException) when (_closed || _stale || _cancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception)
+        {
+            if (!_closed && !_stale)
+                StatusText.Text = "应用失败，请重试或选择其他版本。";
+        }
+        finally
+        {
+            _busy = false;
+            if (!_closed)
+                UpdateControls();
+        }
     }
 
-    private void Cancel_Click(object sender, RoutedEventArgs e)
+    private void UpdateControls()
     {
-        DialogResult = false;
+        ApplyButton.IsEnabled = !_busy && !_stale && CandidateList.SelectedItem is CandidateView;
+        RetryButton.IsEnabled = !_busy && !_stale;
+        CandidateList.IsEnabled = !_busy && !_stale;
+        ShowAllCheckBox.IsEnabled = !_busy && !_stale;
+        LoadingProgress.Visibility = _busy && !_stale ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    /// <summary>列表展示用的视图模型</summary>
+    private async void Retry_Click(object sender, RoutedEventArgs e) => await LoadCandidatesAsync();
+
+    private void ShowAll_Changed(object sender, RoutedEventArgs e) => RefreshCandidates();
+
+    private void CandidateList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ApplyButton is not null)
+            UpdateControls();
+    }
+
+    private void Cancel_Click(object sender, RoutedEventArgs e) => DialogResult = false;
+
     private sealed record CandidateView(string Title, string Detail, LyricCandidate Candidate);
 }

@@ -19,4 +19,7 @@ public sealed record LyricCandidate(
 
     /// <summary>是否至少与一位期望歌手相交；null 表示当前歌曲没有可用歌手信息。</summary>
     public bool? ArtistMatched { get; init; }
+
+    /// <summary>true 表示与当前歌曲核心歌名一致，false 为其它搜索结果；旧版记录可能未标注。</summary>
+    public bool? TitleMatched { get; init; }
 }

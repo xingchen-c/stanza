@@ -17,7 +17,7 @@ public sealed class AppSettings
 
     /// <summary>开机自启</summary>
     public bool AutoStart { get; init; }
-    
+
     /// <summary>日志级别（Debug/Info/Warn/Error），排查问题时改成 Debug 后重启生效；平时保持 Info</summary>
     public string LogLevel { get; init; } = "Info";
 

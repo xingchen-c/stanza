@@ -1,5 +1,4 @@
 using System.Reflection;
-using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -9,6 +8,7 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 using Stanza.Models;
+using Stanza.Interop;
 using Stanza.Services;
 
 namespace Stanza;
@@ -18,6 +18,7 @@ public partial class SettingsWindow
 {
     // 保存设置时保留与界面无关的字段（如手动位置偏移），避免被默认值覆盖
     private readonly AppSettings _baseSettings;
+    private readonly SettingsViewModel _viewModel;
 
     /// <summary>用当前设置初始化窗口，并把控件事件绑定到实时预览与保存流程。</summary>
     public SettingsWindow(AppSettings settings)
@@ -25,6 +26,7 @@ public partial class SettingsWindow
         InitializeComponent();
         SourceInitialized += (_, _) => TryEnableMica();
         _baseSettings = settings;
+        _viewModel = SettingsViewModel.FromSettings(settings);
 
         // ToggleSwitch 旋钮动画由代码驱动（XAML 模板触发器无法解析模板内名称）
         WireToggleAnimation(FluentFlyoutCheck);
@@ -107,7 +109,7 @@ public partial class SettingsWindow
         var settings = BuildSettings();
 
         // 白名单至少勾选一项：全不勾会导致定位没有依据，禁止保存
-        if (settings.TaskbarLocatorWhitelist.Count == 0)
+        if (!_viewModel.IsValid)
         {
             MessageBox.Show(this, "至少勾选一种任务栏定位方式。", "Stanza",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -128,37 +130,38 @@ public partial class SettingsWindow
     /// <summary>从当前控件状态构造 AppSettings（保存与实时预览共用）</summary>
     private AppSettings BuildSettings()
     {
+        SyncViewModel();
+        return _viewModel.ToSettings(_baseSettings);
+    }
+
+    private void SyncViewModel()
+    {
         var whitelist = new List<string>();
         if (FluentFlyoutCheck.IsChecked == true)
             whitelist.Add("FluentFlyout");
         if (IndependentCheck.IsChecked == true)
             whitelist.Add("Independent");
 
-        return new AppSettings
-        {
-            FontSize = FontSizeSlider.Value,
-            LyricColor = (ColorCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "#FFFFFFFF",
-            LyricOffsetMs = (int)OffsetSlider.Value,
-            ClickThrough = ClickThroughCheck.IsChecked == true,
-            ShowMediaControls = MediaControlsCheck.IsChecked == true,
-            HideOnPause = HideOnPauseCheck.IsChecked == true,
-            AutoStart = AutoStartCheck.IsChecked == true,
-            TaskbarLocatorWhitelist = whitelist,
-            PlacementDirection = (DirectionCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Auto",
-            ManualOffsetX = _baseSettings.ManualOffsetX,
-            ManualOffsetY = _baseSettings.ManualOffsetY,
-            AutoCardWidth = AutoWidthCheck.IsChecked == true,
-            CardWidth = WidthSlider.Value,
-            CompatibilityMode = (CompatibilityCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Auto",
-            AnimationSpeed = (AnimationCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Normal"
-        };
+        _viewModel.FontSize = FontSizeSlider.Value;
+        _viewModel.LyricColor = (ColorCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "#FFFFFFFF";
+        _viewModel.LyricOffsetMs = (int)OffsetSlider.Value;
+        _viewModel.ClickThrough = ClickThroughCheck.IsChecked == true;
+        _viewModel.ShowMediaControls = MediaControlsCheck.IsChecked == true;
+        _viewModel.HideOnPause = HideOnPauseCheck.IsChecked == true;
+        _viewModel.AutoStart = AutoStartCheck.IsChecked == true;
+        _viewModel.TaskbarLocatorWhitelist = whitelist;
+        _viewModel.PlacementDirection = (DirectionCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Auto";
+        _viewModel.AutoCardWidth = AutoWidthCheck.IsChecked == true;
+        _viewModel.CardWidth = WidthSlider.Value;
+        _viewModel.CompatibilityMode = (CompatibilityCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Auto";
+        _viewModel.AnimationSpeed = (AnimationCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Normal";
     }
 
     /// <summary>任一设置项变化时触发预览（白名单为空属于无效状态，跳过）</summary>
     private void OnPreviewChanged()
     {
         var settings = BuildSettings();
-        if (settings.TaskbarLocatorWhitelist.Count == 0)
+        if (!_viewModel.IsValid)
             return;
         PreviewChanged?.Invoke(settings);
     }
@@ -245,12 +248,13 @@ public partial class SettingsWindow
             var hwnd = new WindowInteropHelper(this).Handle;
 
             // DWMWA_USE_IMMERSIVE_DARK_MODE：先申请深色模式
+            // 该属性在少数系统版本可能被拒绝；不能因此跳过后续 backdrop。
             var darkMode = 1;
-            DwmSetWindowAttribute(hwnd, 20, ref darkMode, sizeof(int));
+            NativeMethods.DwmSetWindowAttribute(hwnd, 20, ref darkMode, sizeof(int));
 
             // DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_MAINWINDOW
             var backdrop = 2;
-            var hr = DwmSetWindowAttribute(hwnd, 38, ref backdrop, sizeof(int));
+            var hr = NativeMethods.DwmSetWindowAttribute(hwnd, 38, ref backdrop, sizeof(int));
 
             // 只有调用成功（HRESULT ≥ 0）才把背景交给 DWM，否则保持回退色
             Background = hr >= 0
@@ -263,6 +267,4 @@ public partial class SettingsWindow
         }
     }
 
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 }

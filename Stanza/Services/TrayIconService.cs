@@ -8,6 +8,7 @@ namespace Stanza.Services;
 public sealed class TrayIconService : IDisposable
 {
     private readonly NotifyIcon _notifyIcon;
+    private readonly ContextMenuStrip _menu;
 
     private readonly ToolStripMenuItem? _adjustMenuItem;
 
@@ -21,18 +22,18 @@ public sealed class TrayIconService : IDisposable
             Visible = true
         };
 
-        var menu = new ContextMenuStrip();
-        menu.Items.Add("显示/隐藏歌词", null, (_, _) => ShowHideRequested?.Invoke());
-        menu.Items.Add("设置", null, (_, _) => SettingsRequested?.Invoke());
-        menu.Items.Add("打开日志目录", null, (_, _) => OpenLogDirectoryRequested?.Invoke());
-        menu.Items.Add("清除歌词缓存", null, (_, _) => ClearCacheRequested?.Invoke());
-        menu.Items.Add("歌词选择…", null, (_, _) => LyricsSelectionRequested?.Invoke());
+        _menu = new ContextMenuStrip();
+        _menu.Items.Add("显示/隐藏歌词", null, (_, _) => ShowHideRequested?.Invoke());
+        _menu.Items.Add("设置", null, (_, _) => SettingsRequested?.Invoke());
+        _menu.Items.Add("打开日志目录", null, (_, _) => OpenLogDirectoryRequested?.Invoke());
+        _menu.Items.Add("清除歌词缓存", null, (_, _) => ClearCacheRequested?.Invoke());
+        _menu.Items.Add("歌词选择…", null, (_, _) => LyricsSelectionRequested?.Invoke());
         _adjustMenuItem = new ToolStripMenuItem("调整歌词位置…", null, (_, _) => AdjustPositionRequested?.Invoke());
-        menu.Items.Add(_adjustMenuItem);
-        menu.Items.Add("重置歌词位置", null, (_, _) => ResetPositionRequested?.Invoke());
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("退出", null, (_, _) => ExitRequested?.Invoke());
-        _notifyIcon.ContextMenuStrip = menu;
+        _menu.Items.Add(_adjustMenuItem);
+        _menu.Items.Add("重置歌词位置", null, (_, _) => ResetPositionRequested?.Invoke());
+        _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add("退出", null, (_, _) => ExitRequested?.Invoke());
+        _notifyIcon.ContextMenuStrip = _menu;
 
         _notifyIcon.DoubleClick += (_, _) => ShowHideRequested?.Invoke();
     }
@@ -42,6 +43,8 @@ public sealed class TrayIconService : IDisposable
     {
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
+        _menu.Dispose();
+        _adjustMenuItem?.Dispose();
     }
 
     /// <summary>请求切换卡片显隐</summary>

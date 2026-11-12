@@ -7,6 +7,9 @@
 | 包                                        | 许可证                |
 |-------------------------------------------|-----------------------|
 | Lyricify.Lyrics.Helper 0.2.0              | Apache-2.0            |
+| Microsoft.Data.Sqlite / SQLitePCLRaw      | MIT / Apache-2.0      |
+| SQLite 引擎                               | Public Domain         |
+| Serilog / File / Async sinks              | Apache-2.0            |
 | Newtonsoft.Json                           | MIT                   |
 | SharpZipLib                               | MIT                   |
 | CHTCHSConv                                | MIT（以包内声明为准） |

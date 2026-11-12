@@ -11,11 +11,11 @@ public interface ILyricsProvider
     /// <summary>来源名称（日志/调试用）</summary>
     string Name { get; }
 
-    /// <summary>按歌曲信息加载歌词；返回结果（含行列表）</summary>
-    Task<LyricsResult> LoadAsync(string title, string artist, int? durationMs);
+    /// <summary>按统一查询加载歌词；返回结果（含行列表）</summary>
+    Task<LyricsResult> LoadAsync(LyricsQuery query);
 
     /// <summary>搜索候选列表（手动选择歌词用）；不支持的源返回空列表</summary>
-    Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(string title, string artist, int? durationMs)
+    Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(LyricsQuery query)
     {
         return Task.FromResult<IReadOnlyList<LyricCandidate>>([]);
     }

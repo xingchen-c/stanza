@@ -19,8 +19,10 @@ public sealed class LrclibLyricsProvider : ILyricsProvider
     public string Name => "LRCLIB";
 
     /// <inheritdoc />
-    public async Task<LyricsResult> LoadAsync(string title, string artist, int? durationMs)
+    public async Task<LyricsResult> LoadAsync(LyricsQuery query)
     {
+        var title = query.Title;
+        var artist = query.Artist;
         if (string.IsNullOrWhiteSpace(title))
             return new LyricsResult(LyricsLoadResult.NotFound, []);
 
@@ -31,7 +33,7 @@ public sealed class LrclibLyricsProvider : ILyricsProvider
             {
                 Title = title,
                 Artist = artist,
-                DurationMs = durationMs
+                DurationMs = query.DurationMs
             };
 
             var searchResult = await SearcherHelper.LRCLIBSearcher.SearchForResult(metadata);
@@ -45,8 +47,21 @@ public sealed class LrclibLyricsProvider : ILyricsProvider
                 QqMusicLyricsProvider.ArtistRankKey(lrclib.Artists, artist) <
                 QqMusicLyricsProvider.ArtistMatchThreshold)
             {
-                AppLog.Info($"LRCLIB 无歌手匹配候选，拒绝跨歌手自动命中: '{title}' / '{artist}' / 候选歌手='{string.Join(", ", lrclib.Artists ?? [])}'");
-                return new LyricsResult(LyricsLoadResult.NotFound, []);
+                // LRCLIB 是链尾且只有单结果，拒绝即整首歌无歌词。
+                // 歌名精确相等时按“歌手写法差异”放行；只有歌名包含关系时才拒绝。
+                var titleExact = QqMusicLyricsProvider.Normalize(lrclib.Title ?? title) ==
+                                 QqMusicLyricsProvider.Normalize(title);
+                if (!titleExact)
+                {
+                    AppLog.Info(
+                        $"LRCLIB 歌手与歌名均不精确，拒绝: '{title}' / '{artist}' / " +
+                        $"候选='{lrclib.Title}' / 候选歌手='{string.Join(", ", lrclib.Artists ?? [])}'");
+                    return new LyricsResult(LyricsLoadResult.NotFound, []);
+                }
+
+                AppLog.Warn(
+                    $"LRCLIB 歌手不匹配但歌名精确相等，按歌手写法差异放行: '{title}' / '{artist}' / " +
+                    $"候选歌手='{string.Join(", ", lrclib.Artists ?? [])}'");
             }
 
             // 2. 用歌曲 Id 获取歌词

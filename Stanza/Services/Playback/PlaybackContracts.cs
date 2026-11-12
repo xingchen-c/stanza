@@ -30,7 +30,6 @@ internal readonly record struct PlaybackMetadata(
 /// <summary>封面读取请求：由公共协调器提供统一上下文，适配器只负责取图。</summary>
 internal readonly record struct PlaybackCoverRequest(
     string TrackKey,
-    PlaybackMetadata Metadata,
     GlobalSystemMediaTransportControlsSessionMediaProperties Props,
     long NowUtcMs);
 

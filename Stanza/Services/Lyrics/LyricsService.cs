@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Stanza.Models;
 
 namespace Stanza.Services.Lyrics;
@@ -8,191 +7,175 @@ namespace Stanza.Services.Lyrics;
 /// </summary>
 public sealed class LyricsService
 {
-    /// <summary>内存缓存上限：满时淘汰最久未用的（轻量 LRU，避免周期性全清导致命中率归零）</summary>
-    private const int MaxMemoryCacheEntries = 20;
-
-    // 最近歌曲的歌词缓存：切回听过的歌秒出，不用重新走网络搜索
-    private readonly Dictionary<string, CacheEntry> _cache = new();
-    private readonly ILyricsProvider[] _providers;
+    private readonly ILyricsCacheStore _cacheStore;
+    private readonly LyricsMemoryCache _memoryCache = new();
+    private readonly LyricsProviderChain _providerChain;
     private List<LyricLine> _lines = [];
+    private int _generation;
+    private string? _linesKey;
+    private readonly Dictionary<string, int> _manualGenerations = [];
+    private readonly SemaphoreSlim _cacheWriteGate = new(1, 1);
 
-    private sealed class CacheEntry
+    /// <summary>注入持久化缓存与歌词源（按顺序尝试，第一个返回 Loaded/Instrumental 的胜出）</summary>
+    internal LyricsService(ILyricsCacheStore cacheStore, params ILyricsProvider[] providers)
     {
-        public LyricsLoadResult Status;
-        public List<LyricLine> Lines = [];
-        public long LastUsedUnixMs;
-    }
-
-    /// <summary>可注入自定义歌词源（按顺序尝试，第一个返回 Loaded/Instrumental 的胜出）</summary>
-    public LyricsService(params ILyricsProvider[] providers)
-    {
-        _providers = providers.Length > 0 ? providers : [new QqMusicLyricsProvider()];
+        _cacheStore = cacheStore;
+        _providerChain = new LyricsProviderChain(providers);
     }
 
     /// <summary>当前歌曲的歌词行（按开始时间升序）</summary>
     public IReadOnlyList<LyricLine> Lines => _lines;
 
-    /// <summary>搜索并加载歌词；返回加载结果</summary>
-    public async Task<LyricsLoadResult> LoadAsync(string title, string artist, int? durationMs)
+    /// <summary>当前世代号。调用方在一次逻辑加载开始时取一次并贯穿该次加载。</summary>
+    public int Generation => Volatile.Read(ref _generation);
+
+    /// <summary>作废所有在飞的加载；切歌或会话断开时调用。</summary>
+    public void InvalidateInFlight() => Interlocked.Increment(ref _generation);
+
+    /// <summary>指定世代是否仍为当前世代；用于防止迟到结果改动显示状态。</summary>
+    internal bool IsCurrentGeneration(int generation)
+        => Volatile.Read(ref _generation) == generation;
+
+    /// <summary>手选接管同曲的自动请求，但不作废其它曲目迟到结果的缓存资格。</summary>
+    internal int BeginManualSelection(string key)
     {
-        _lines = [];
-
-        var cacheKey = TrackKey.Of(title, artist);
-        if (_cache.TryGetValue(cacheKey, out var cached))
-        {
-            _lines = cached.Lines;
-            cached.LastUsedUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            AppLog.Debug($"歌词缓存命中: '{title}' / {artist}（{cached.Status}）");
-            return cached.Status;
-        }
-
-        // 磁盘缓存：重启后听过的歌秒出，QQ 接口挂起时也能兜底
-        if (LyricsCacheService.TryGet(cacheKey, out var diskStatus, out var diskLines))
-        {
-            _lines = diskLines;
-            PutCache(cacheKey, diskStatus, diskLines);
-            AppLog.Debug($"歌词磁盘缓存命中: '{title}' / {artist}（{diskStatus}）");
-            return diskStatus;
-        }
-
-        // 预算拆成"每源独立 + 总上限"：Lyricify 的 QQ 接口偶发挂起（默认 HttpClient 超时可达 100s）
-        // 时，LRCLIB 兜底源仍能拿到自己的时间，而不是被 QQ 的 8 秒占满后直接放弃。
-        var stopwatch = Stopwatch.StartNew();
-        const double providerBudgetSec = 5.0; // 每个源最多等 5 秒
-        const double totalBudgetSec = 8.0;    // 整条加载链最多 8 秒
-        foreach (var provider in _providers)
-        {
-            AppLog.Debug($"尝试歌词源 {provider.Name}: '{title}' / {artist}");
-            var remainingSec = Math.Min(providerBudgetSec, Math.Max(0, totalBudgetSec - stopwatch.Elapsed.TotalSeconds));
-            if (remainingSec <= 0)
-            {
-                AppLog.Warn($"歌词源 {provider.Name} 已无剩余预算，本轮放弃");
-                break;
-            }
-
-            LyricsResult result;
-            try
-            {
-                var loadTask = provider.LoadAsync(title, artist, durationMs);
-                var completed = await Task.WhenAny(loadTask, Task.Delay(TimeSpan.FromSeconds(remainingSec)));
-                if (completed != loadTask)
-                {
-                    AppLog.Warn($"歌词源 {provider.Name} 超过 {remainingSec:F1}s 未返回，转下一个源");
-                    // 超时后任务仍在后台跑（Lyricify API 不接受取消）：观察异常，避免 UnobservedTaskException
-                    _ = loadTask.ContinueWith(t =>
-                    {
-                        if (t.IsFaulted)
-                            AppLog.Warn($"歌词源 {provider.Name} 超时后异常: {t.Exception?.GetBaseException().Message}");
-                    }, TaskScheduler.Default);
-                    continue; // 该源超时：给下一个源（LRCLIB 兜底）剩余预算，而不是整条链直接放弃
-                }
-
-                result = await loadTask;
-            }
-            catch (Exception ex)
-            {
-                AppLog.Error($"歌词源 {provider.Name} 加载异常", ex);
-                continue; // 单个源失败不影响其他源
-            }
-
-            if (result.Status == LyricsLoadResult.NotFound)
-            {
-                AppLog.Debug($"歌词源 {provider.Name} 未找到歌词");
-                continue;
-            }
-
-            _lines = result.Lines.ToList();
-            AppLog.Info($"歌词加载成功: 来源={provider.Name} 结果={result.Status} 行数={_lines.Count} 歌曲='{title}' / {artist}");
-
-            // NotFound 不缓存（可能是网络抖动），Loaded/Instrumental 才缓存
-            PutCache(cacheKey, result.Status, _lines);
-            LyricsCacheService.Put(cacheKey, result.Status, _lines); // 持久化，重启不丢
-
-            return result.Status;
-        }
-
-        AppLog.Warn($"所有歌词源均未找到歌词: '{title}' / {artist}");
-        return LyricsLoadResult.NotFound;
+        InvalidateInFlight();
+        var generation = Generation;
+        _manualGenerations[key] = generation;
+        return generation;
     }
 
-    /// <summary>写入内存缓存：满上限时淘汰最久未用的（比全清平滑）</summary>
-    private void PutCache(string key, LyricsLoadResult status, IReadOnlyList<LyricLine> lines)
+    /// <summary>搜索并加载歌词；返回加载结果。</summary>
+    public async Task<LyricsLoadResult> LoadAsync(
+        LyricsQuery query, int generation, CancellationToken cancellationToken = default)
     {
-        if (_cache.Count >= MaxMemoryCacheEntries)
+        cancellationToken.ThrowIfCancellationRequested();
+        // 新歌须清旧词；同曲重试失败时保留已有可用歌词。
+        if (IsCurrentGeneration(generation) && _linesKey != query.Key)
+            Clear();
+
+        if (await TryLoadCachedAsync(query.Key, generation, cancellationToken) is { } cached)
+            return cached;
+
+        var result = await _providerChain.LoadAsync(query, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (result.Status == LyricsLoadResult.NotFound)
+            return result.Status;
+
+        var lines = result.Lines.ToList();
+        await CacheAsync(query.Key, result.Status, lines, generation, manual: false, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (IsCurrentGeneration(generation))
         {
-            var staleKey = _cache.OrderBy(kv => kv.Value.LastUsedUnixMs).First().Key;
-            _cache.Remove(staleKey);
+            _lines = lines;
+            _linesKey = query.Key;
+        }
+        return result.Status;
+    }
+
+    // 缓存内部身份，不使用会随会话变化的曲目 revision，也不与自动匹配缓存混用。
+    internal static string CandidateCacheKey(string key, LyricCandidate candidate)
+        => $"candidate:{key.Length}:{key}{candidate.SourceKey.Length}:{candidate.SourceKey}{candidate.Id}";
+
+    internal async Task<LyricsLoadResult?> TryLoadCachedAsync(
+        string key, int generation, CancellationToken cancellationToken = default, string? trackKey = null)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_memoryCache.TryGet(key, out var status, out var lines))
+        {
+            if (IsCurrentGeneration(generation))
+            {
+                _lines = lines;
+                _linesKey = trackKey ?? key;
+            }
+            return status;
         }
 
-        _cache[key] = new CacheEntry
+        var cached = await _cacheStore.GetAsync(key).WaitAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (cached is not { } hit)
+            return null;
+
+        if (MayCache(trackKey ?? key, generation))
+            _memoryCache.Put(key, hit.Status, hit.Lines);
+        if (IsCurrentGeneration(generation))
         {
-            Status = status,
-            Lines = lines.ToList(),
-            LastUsedUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-        };
+            _lines = hit.Lines;
+            _linesKey = trackKey ?? key;
+        }
+        return hit.Status;
+    }
+
+    private bool MayCache(string key, int generation)
+        => !_manualGenerations.TryGetValue(key, out var manualGeneration) || generation >= manualGeneration;
+
+    private async Task CacheAsync(string key, LyricsLoadResult status, List<LyricLine> lines,
+        int generation, bool manual, CancellationToken token)
+    {
+        // 磁盘写入也保持调用顺序，防止已开始的旧自动写入在手选写入之后才完成。
+        await _cacheWriteGate.WaitAsync(token);
+        try
+        {
+            if (!MayCache(key, generation) || (manual && !IsCurrentGeneration(generation)))
+                return;
+            token.ThrowIfCancellationRequested();
+            await _cacheStore.PutAsync(key, status, lines);
+            token.ThrowIfCancellationRequested();
+            if (MayCache(key, generation) && (!manual || IsCurrentGeneration(generation)))
+                _memoryCache.Put(key, status, lines);
+        }
+        finally
+        {
+            _cacheWriteGate.Release();
+        }
     }
 
     /// <summary>清空歌词</summary>
     public void Clear()
     {
         _lines = [];
+        _linesKey = null;
     }
 
     /// <summary>清除歌词缓存（内存 + 磁盘），排查歌词问题时用</summary>
     public void ClearCache()
     {
-        _cache.Clear();
-        LyricsCacheService.Clear();
+        _memoryCache.Clear();
+        _cacheStore.Clear();
         AppLog.Info("歌词缓存已清除（内存 + 磁盘）");
     }
 
     /// <summary>收集各源的搜索候选（手动选择歌词用）</summary>
-    public async Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(string title, string artist, int? durationMs)
-    {
-        var list = new List<LyricCandidate>();
-        foreach (var provider in _providers)
-            try
-            {
-                list.AddRange(await provider.GetCandidatesAsync(title, artist, durationMs));
-            }
-            catch (Exception ex)
-            {
-                AppLog.Error($"候选获取失败 {provider.Name}", ex);
-            }
-
-        return list
-            .Select((candidate, index) => (Candidate: candidate, Index: index))
-            .OrderByDescending(x => x.Candidate.ArtistMatched switch
-            {
-                true => 2,
-                null => 1,
-                false => 0
-            })
-            .ThenByDescending(x => x.Candidate.MatchScore)
-            .ThenBy(x => x.Index)
-            .Select(x => x.Candidate)
-            .ToList();
-    }
+    public Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(
+        LyricsQuery query, CancellationToken cancellationToken = default)
+        => _providerChain.GetCandidatesAsync(query, cancellationToken);
 
     /// <summary>按用户选中的候选直接取词（跳过自动匹配），并更新当前歌词行缓存</summary>
-    public async Task<LyricsLoadResult> LoadCandidateAsync(LyricCandidate candidate)
+    public async Task<LyricsLoadResult> LoadCandidateAsync(
+        LyricCandidate candidate,
+        int generation,
+        string? key = null,
+        CancellationToken cancellationToken = default)
     {
-        var provider = _providers.FirstOrDefault(p => p.Key == candidate.SourceKey);
-        if (provider is null)
-            return LyricsLoadResult.NotFound;
-
-        try
-        {
-            var result = await provider.LoadCandidateAsync(candidate);
-            if (result.Status != LyricsLoadResult.NotFound)
-                _lines = [.. result.Lines];
+        var result = await _providerChain.LoadCandidateAsync(candidate, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (result.Status == LyricsLoadResult.NotFound || !IsCurrentGeneration(generation))
             return result.Status;
-        }
-        catch (Exception ex)
+
+        var lines = result.Lines.ToList();
+        // 纯音乐不记忆，避免一次误选永久挡住正常自动匹配。
+        if (key is not null && result.Status != LyricsLoadResult.Instrumental)
         {
-            AppLog.Error($"按候选取词失败 {provider.Name}", ex);
-            return LyricsLoadResult.NotFound;
+            await CacheAsync(CandidateCacheKey(key, candidate), result.Status, lines, generation, manual: true, cancellationToken);
+            await CacheAsync(key, result.Status, lines, generation, manual: true, cancellationToken);
         }
+        cancellationToken.ThrowIfCancellationRequested();
+        if (IsCurrentGeneration(generation))
+        {
+            _lines = lines;
+            _linesKey = key;
+        }
+        return result.Status;
     }
 
     /// <summary>按播放位置获取当前歌词行索引。</summary>

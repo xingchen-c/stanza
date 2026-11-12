@@ -15,23 +15,36 @@ internal sealed class PlaybackPositionTracker(
     private int _lastPlayingPositionMs = -1;
     private int _pausedDisplayPositionMs = -1;
     private int _resumeAnchorPositionMs = -1;
+    private bool _trackConfirmed;
 
     /// <summary>切歌：重置全部时序状态；切歌起点同时作为新的外推边界。</summary>
-    public void OnTrackSwitch(long utcMs)
+    public void OnTrackSwitch(long utcMs, int? initialPositionMs = null)
     {
-        _lastSwitchStartUtcMs = utcMs;
+        _lastSwitchStartUtcMs = initialPositionMs.HasValue ? 0 : utcMs;
         _resumeBoundaryUtcMs = utcMs;
         _lastPlayingSnapshotUtcMs = 0;
-        _lastPlayingPositionMs = -1;
+        _lastPlayingPositionMs = initialPositionMs ?? -1;
         _pausedDisplayPositionMs = -1;
-        _resumeAnchorPositionMs = -1;
+        _resumeAnchorPositionMs = initialPositionMs ?? -1;
+
+        // 首次接入会话时带 initialPositionMs，不存在“上一首旧快照”问题，可直接视为已确认。
+        // 真正的切歌必须等 SmtcSessionService 读到不同的新 key 后调用 OnTrackConfirmed()。
+        _trackConfirmed = initialPositionMs.HasValue;
     }
+
+    /// <summary>新歌 key 已确认：允许旧快照期间用墙钟从切歌点补位置。</summary>
+    public void OnTrackConfirmed() => _trackConfirmed = true;
 
     /// <summary>恢复播放边界更新（暂停→播放）。</summary>
     public void OnResumeBoundary(long utcMs)
     {
         _resumeBoundaryUtcMs = utcMs;
-        _resumeAnchorPositionMs = -1;
+        _resumeAnchorPositionMs = _pausedDisplayPositionMs >= 0
+            ? _pausedDisplayPositionMs
+            : _lastPlayingPositionMs;
+
+        // 绝对不能在这里清 _lastSwitchStartUtcMs。切歌序列末尾的 Changing→Playing /
+        // Stopped→Playing 也会走到这里，清零会同时废掉旧快照闸门和位置毛刺闸门。
     }
 
     /// <summary>会话断开/歌曲清空：闸门与合成状态全部复位。</summary>
@@ -43,6 +56,7 @@ internal sealed class PlaybackPositionTracker(
         _lastPlayingPositionMs = -1;
         _pausedDisplayPositionMs = -1;
         _resumeAnchorPositionMs = -1;
+        _trackConfirmed = false;
     }
 
     /// <summary>
@@ -59,7 +73,23 @@ internal sealed class PlaybackPositionTracker(
         if (_lastSwitchStartUtcMs > 0 &&
             nowUtcMs - _lastSwitchStartUtcMs < switching.StaleSnapshotWindowMs &&
             snapshotUtcMs < _lastSwitchStartUtcMs)
+        {
+            // 新歌已经进入 Playing，但时间线仍是上一首的旧快照。
+            // 此时不要跳过渲染，否则要等整个旧快照窗口结束才从 0 开始补，
+            // 表现为暂停后切歌的歌词延迟数秒。墙钟时间从切歌点直接推进。
+            if (_trackConfirmed && isPlaying && timing.AllowWallClockFallback)
+            {
+                var elapsedMs = Math.Clamp(
+                    nowUtcMs - _lastSwitchStartUtcMs,
+                    0,
+                    int.MaxValue);
+                _pausedDisplayPositionMs = -1;
+                _lastPlayingPositionMs = (int)elapsedMs;
+                return SampleResult.Render(_lastPlayingPositionMs);
+            }
+
             return SampleResult.Skip($"旧快照(滞后{_lastSwitchStartUtcMs - snapshotUtcMs}ms)");
+        }
 
         // 闸门 2：LastUpdatedTime 已更新，但 Position 仍残留上一首的大值。
         if (rawPositionMs > switching.PositionGlitchThresholdMs &&
@@ -80,8 +110,6 @@ internal sealed class PlaybackPositionTracker(
 
         if (isPlaying)
         {
-            if (_pausedDisplayPositionMs >= 0)
-                _resumeAnchorPositionMs = -1;
             _pausedDisplayPositionMs = -1;
 
             var elapsedMs = nowUtcMs - snapshotUtcMs;
@@ -103,9 +131,10 @@ internal sealed class PlaybackPositionTracker(
                 if (_resumeAnchorPositionMs < 0)
                     _resumeAnchorPositionMs = Math.Max(0, _lastPlayingPositionMs);
 
-                var sinceResumeMs = nowUtcMs - _resumeBoundaryUtcMs;
-                if (sinceResumeMs > 0)
-                    positionMs = _resumeAnchorPositionMs + sinceResumeMs;
+                // 恢复当拍 sinceResumeMs == 0 也必须落到锚点；保留 rawPositionMs
+                // 会渲染暂停前或上一首的旧快照值，造成一帧位置跳变。
+                var sinceResumeMs = Math.Max(0, nowUtcMs - _resumeBoundaryUtcMs);
+                positionMs = _resumeAnchorPositionMs + sinceResumeMs;
             }
 
             _lastPlayingSnapshotUtcMs = snapshotUtcMs;
@@ -120,11 +149,22 @@ internal sealed class PlaybackPositionTracker(
                     (!timing.TrustLastUpdatedTime ||
                      snapshotUtcMs > _lastPlayingSnapshotUtcMs);
 
-                _pausedDisplayPositionMs = finalPositionArrived
+                var frozenPositionMs = finalPositionArrived
                     ? (int)Math.Min(rawPositionMs, int.MaxValue)
                     : _lastPlayingPositionMs >= 0
                         ? _lastPlayingPositionMs
                         : (int)Math.Min(rawPositionMs, int.MaxValue);
+
+                // 暂停瞬间播放器可能先给旧快照、再补真实暂停位置。
+                // 小幅回退不更新显示，避免卡拉OK条先外推、随后又跳回去；大回退仍视为 seek。
+                if (_lastPlayingPositionMs >= 0 &&
+                    frozenPositionMs < _lastPlayingPositionMs &&
+                    _lastPlayingPositionMs - frozenPositionMs <= timing.PauseSeekThresholdMs)
+                {
+                    frozenPositionMs = _lastPlayingPositionMs;
+                }
+
+                _pausedDisplayPositionMs = frozenPositionMs;
                 _lastPlayingSnapshotUtcMs = snapshotUtcMs;
             }
             else if (timing.TrustPositionWhenPaused &&

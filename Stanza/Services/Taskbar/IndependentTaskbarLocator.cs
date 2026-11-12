@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+using Stanza.Interop;
 using Stanza.Models;
 
 namespace Stanza.Services.Taskbar;
@@ -63,30 +63,14 @@ public sealed class IndependentTaskbarLocator : ITaskbarWidgetLocator
         return new PixelRect(cardLeft, trayRect.Top, cardLeft + width, trayRect.Bottom);
     }
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr childAfter, string? className, string? windowName);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetWindowRect(IntPtr hWnd, out Rect rect);
-
     private static PixelRect? GetChildRect(IntPtr parent, string className)
     {
-        var h = FindWindowEx(parent, IntPtr.Zero, className, null);
-        if (h == IntPtr.Zero || !GetWindowRect(h, out var rect) || rect.Width <= 0 || rect.Height <= 0)
+        var h = NativeMethods.FindWindowEx(parent, IntPtr.Zero, className, null);
+        if (h == IntPtr.Zero ||
+            !NativeMethods.GetWindowRect(h, out var rect) ||
+            rect.Width <= 0 ||
+            rect.Height <= 0)
             return null;
         return new PixelRect(rect.Left, rect.Top, rect.Right, rect.Bottom);
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct Rect
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-
-        public int Width => Right - Left;
-        public int Height => Bottom - Top;
     }
 }

@@ -60,11 +60,14 @@ public class QqMusicMatchingTests
     // ---- 匹配度排序权重 ----
 
     [Theory]
-    [InlineData("Perfect", 5)]
-    [InlineData("PrettyHigh", 4)]
-    [InlineData("High", 3)]
-    [InlineData("Medium", 2)]
-    [InlineData("Low", 1)]
+    [InlineData("Perfect", 100)]
+    [InlineData("VeryHigh", 99)]
+    [InlineData("High", 95)]
+    [InlineData("PrettyHigh", 90)]
+    [InlineData("Medium", 70)]
+    [InlineData("Low", 30)]
+    [InlineData("VeryLow", 10)]
+    [InlineData("NoMatch", 0)]
     [InlineData("Unknown", 0)]
     [InlineData(null, 0)]
     [InlineData("未来版本的新枚举名", 0)] // 库升级改名时静默落底，测试锚定现状
@@ -248,6 +251,44 @@ public class QqMusicMatchingTests
 
         Assert.True(noMatch < QqMusicLyricsProvider.ArtistMatchThreshold);
         Assert.True(partialMatch >= QqMusicLyricsProvider.ArtistMatchThreshold);
+    }
+
+    [Fact]
+    public void 无歌手匹配候选时应降级而非放弃()
+    {
+        var scored = new List<(int Index, double Rank)>
+        {
+            (0, 0.2),
+            (1, 0.2),
+            (2, 0.2)
+        };
+
+        var selection = QqMusicLyricsProvider.SelectByArtistTier(
+            scored,
+            x => x.Rank,
+            hasExpectedArtist: true);
+
+        Assert.True(selection.UsedFallback);
+        Assert.Equal(scored, selection.Ranked);
+    }
+
+    [Fact]
+    public void 存在歌手匹配候选时应只用匹配的()
+    {
+        var scored = new List<(int Index, double Rank)>
+        {
+            (0, 0.2),
+            (1, 1.0),
+            (2, 0.6)
+        };
+
+        var selection = QqMusicLyricsProvider.SelectByArtistTier(
+            scored,
+            x => x.Rank,
+            hasExpectedArtist: true);
+
+        Assert.False(selection.UsedFallback);
+        Assert.Equal([(1, 1.0), (2, 0.6)], selection.Ranked);
     }
 
     [Fact]

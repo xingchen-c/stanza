@@ -14,9 +14,13 @@ public partial class App
 {
     private static Mutex? _singleInstanceMutex;
 
+    internal AppServices Services { get; private set; } = null!;
+
     /// <summary>启动入口：迁移旧数据、注册异常兜底并建立单实例互斥体。</summary>
     protected override void OnStartup(StartupEventArgs e)
     {
+        base.OnStartup(e);
+
         // 一次性迁移旧版数据目录（改名前叫 FluentLyrics），必须赶在 AppLog 首次建目录之前
         MigrateLegacyAppData();
 
@@ -30,12 +34,15 @@ public partial class App
         if (!createdNew)
         {
             AppLog.Info("检测到已有实例，本次启动退出");
+            // WPF 在 OnStartup 返回后仍会处理 StartupUri；Shutdown() 只是异步排队，
+            // 清掉 StartupUri 才能阻止组合根尚未赋值时 MainWindow 被构造。
+            StartupUri = null;
             Shutdown();
             return;
         }
 
         AppLog.Info($"应用启动 v{Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "?"}");
-        base.OnStartup(e);
+        Services = new AppServices();
     }
 
     /// <summary>退出清理：释放单实例互斥体并冲刷异步日志。</summary>

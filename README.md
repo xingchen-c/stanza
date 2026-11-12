@@ -1,6 +1,6 @@
 # Stanza
 
-在 Windows 任务栏实时显示系统媒体播放器歌词的轻量小组件——透明、点击穿透、歌词优先。QQ 音乐桌面版已实机适配，其他标准 SMTC 播放器走通用策略。
+在 Windows 任务栏实时显示系统媒体播放器歌词的轻量小组件——透明、点击穿透、歌词优先。QQ 音乐桌面版已实机适配；网易云音乐已有独立 SMTC 策略和 AUMID 识别，完整时序仍在继续验收；其他标准 SMTC 播放器走通用策略。
 
 通过系统媒体会话（SMTC）监听当前播放，逐行同步歌词，支持卡拉 OK 式双色进度（已播放/未播放逐字揭晓）、非中文歌中文翻译、长歌词跟随滚动。
 
@@ -11,7 +11,7 @@
 ## 功能
 
 - **任务栏歌词卡片**：支持多显示器；定位可选「贴 FluentFlyout 组件」或「独立定位（不依赖外部组件）」
-- **播放器接入**：自动选择 Windows SMTC 会话；QQ 音乐有独立来源策略，未知播放器使用 Generic 策略
+- **播放器接入**：自动选择 Windows SMTC 会话；QQ 音乐、网易云音乐有独立来源策略，未知播放器使用 Generic 策略
 - **歌词获取**：QQ 音乐优先（逐字 QRC）、网易云音乐兜底（逐字 YRC）、LRCLIB 最后兜底，逐行同步
 - **翻译**：非中文歌自动显示 QQ 提供的中文翻译（正词 + 翻译双行显示）
 - **卡拉 OK 进度**：已播放部分亮色、未播放部分暗色，逐字跟随演唱节奏推进；长歌词跟随滚动
@@ -24,8 +24,9 @@
 
 - Windows 11（Windows 10 未实测）
 - QQ 音乐桌面版：请在设置中开启「系统媒体传输控制（SMTC）」
+- 网易云音乐桌面版：已接入专用播放源策略；由于各版本 SMTC 事件质量不同，暂停恢复和切歌仍在持续实机验收，seek 尚未支持
 - 其他播放器：需发布标准 SMTC 会话；目前只保证通用链路可用，尚未逐一完成实机验收
-- [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)（使用 Release 包时需要）
+- [.NET 11 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/11.0)（框架依赖版需要；自包含包无需安装）
 
 ## 安装与使用
 
@@ -37,10 +38,10 @@
 
 ## 从源码构建
 
-在仓库根目录（含 `Stanza.slnx` 的那层）执行：
+需安装 .NET 11 SDK。在仓库根目录（含 `Stanza.slnx` 的那层）执行：
 
 ```bash
-# 框架依赖版（需 .NET 10 Desktop Runtime，体积小）
+# 框架依赖版（需 .NET 11 Desktop Runtime，体积小）
 dotnet publish Stanza\Stanza.csproj -c Release -o ..\dist\release
 
 # 自包含单文件版（免安装，体积约 100MB）
@@ -51,11 +52,13 @@ dotnet publish Stanza\Stanza.csproj -c Release -r win-x64 --self-contained true 
 
 设置保存在 `%APPDATA%\Stanza\settings.json`，删除该文件即可恢复默认设置。
 
+歌词缓存和手动选择记忆保存在同一个 SQLite 数据库 `%APPDATA%\Stanza\stanza.db`。旧版 `lyrics-cache.json` / `lyrics-choice.json` 会在首次启动时自动迁移并改名为 `.migrated`。
+
 ## 常见问题
 
 **任务栏没有出现歌词卡片？**
 
-确认播放器正在播放，并且 QQ 音乐已开启「系统媒体传输控制（SMTC）」。其他播放器需要自行支持并发布标准 SMTC 会话。
+确认播放器正在播放，并且 QQ 音乐已开启「系统媒体传输控制（SMTC）」。网易云音乐应发布标准 SMTC 会话；其他播放器也需要自行支持并发布标准 SMTC 会话。
 
 **显示「未找到歌词」或「纯音乐」？**
 
@@ -63,7 +66,7 @@ dotnet publish Stanza\Stanza.csproj -c Release -r win-x64 --self-contained true 
 
 **需要额外安装什么？**
 
-自包含包（`*-selfcontained`）免安装直接运行；框架依赖包需要安装 .NET 10 Desktop Runtime。
+自包含包（`*-selfcontained`）免安装直接运行；框架依赖包需要安装 .NET 11 Desktop Runtime。
 
 ## 许可证
 

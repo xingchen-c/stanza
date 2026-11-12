@@ -15,18 +15,31 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" x:Name="StatusText"
-                   Text="自动匹配的歌词版本可能不对，选一个试试："
-                   FontSize="13" Foreground="#D0000000" TextWrapping="Wrap" />
+        <StackPanel Grid.Row="0">
+            <TextBlock x:Name="TrackText" FontSize="13" FontWeight="SemiBold"
+                       TextTrimming="CharacterEllipsis" />
+            <TextBlock x:Name="StatusText" Text="正在搜索歌词版本…" Margin="0,6,0,0"
+                       FontSize="13" Foreground="#D0000000" TextWrapping="Wrap" />
+            <ProgressBar x:Name="LoadingProgress" Height="3" Margin="0,8,0,0"
+                         IsIndeterminate="True" />
+            <DockPanel Margin="0,10,0,0">
+                <Button x:Name="RetryButton" DockPanel.Dock="Right" Content="重新搜索"
+                        Padding="8,3" Click="Retry_Click" IsEnabled="False" />
+                <CheckBox x:Name="ShowAllCheckBox" Content="显示全部搜索结果"
+                          VerticalAlignment="Center" IsEnabled="False"
+                          Checked="ShowAll_Changed" Unchecked="ShowAll_Changed" />
+            </DockPanel>
+        </StackPanel>
 
         <ListBox Grid.Row="1" x:Name="CandidateList"
                  Margin="0,10,0,10"
                  FontSize="13"
-                 SelectionMode="Single"
+                 SelectionMode="Single" IsEnabled="False"
+                 SelectionChanged="CandidateList_SelectionChanged"
                  ScrollViewer.HorizontalScrollBarVisibility="Disabled">
             <ListBox.ItemTemplate>
                 <DataTemplate>
-                    <StackPanel Margin="2,5">
+                    <StackPanel Margin="2,5" ToolTip="{Binding Detail}">
                         <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                         <TextBlock Text="{Binding Detail}"
                                    FontSize="11"
@@ -39,8 +52,8 @@
         </ListBox>
 
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button x:Name="ApplyButton" Content="应用" Width="80" Height="30" Click="Apply_Click" />
-            <Button Content="取消" Width="80" Height="30" Margin="8,0,0,0" Click="Cancel_Click" />
+            <Button x:Name="ApplyButton" Content="应用" Width="80" Height="30" IsEnabled="False" Click="Apply_Click" />
+            <Button Content="取消" Width="80" Height="30" Margin="8,0,0,0" IsCancel="True" Click="Cancel_Click" />
         </StackPanel>
     </Grid>
 </Window>

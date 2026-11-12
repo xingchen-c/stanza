@@ -21,7 +21,7 @@ public static class AppLog
         LogEventLevel.Information
 #endif
     );
-    
+
     /// <summary>按字符串设置日志级别（设置加载后调用；无法识别的值按 Info 处理）</summary>
     public static void ApplyLevel(string? level)
     {

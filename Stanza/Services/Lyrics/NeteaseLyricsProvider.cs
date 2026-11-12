@@ -18,8 +18,11 @@ public sealed class NeteaseLyricsProvider : ILyricsProvider
     public string Name => "网易云音乐";
 
     /// <inheritdoc />
-    public async Task<LyricsResult> LoadAsync(string title, string artist, int? durationMs)
+    public async Task<LyricsResult> LoadAsync(LyricsQuery query)
     {
+        var title = query.Title;
+        var artist = query.Artist;
+        var durationMs = query.DurationMs;
         if (string.IsNullOrWhiteSpace(title))
             return new LyricsResult(LyricsLoadResult.NotFound, []);
 
@@ -42,16 +45,17 @@ public sealed class NeteaseLyricsProvider : ILyricsProvider
                 .ToList();
 
             var hasExpectedArtist = !string.IsNullOrWhiteSpace(artist);
-            if (hasExpectedArtist &&
-                !scored.Any(x => x.ArtistRank >= QqMusicLyricsProvider.ArtistMatchThreshold))
+            var selection = QqMusicLyricsProvider.SelectByArtistTier(
+                scored,
+                x => x.ArtistRank,
+                hasExpectedArtist);
+            var ranked = selection.Ranked;
+            if (selection.UsedFallback && scored.Count > 0)
             {
-                AppLog.Info($"网易云无歌手匹配候选，拒绝跨歌手自动命中: '{title}' / '{artist}'，歌名相关候选={scored.Count}");
-                return new LyricsResult(LyricsLoadResult.NotFound, []);
+                AppLog.Info(
+                    $"网易云无歌手匹配候选，降级为歌名匹配（可能跨歌手）: '{title}' / '{artist}'，" +
+                    $"歌名相关候选={scored.Count}");
             }
-
-            var ranked = hasExpectedArtist
-                ? scored.Where(x => x.ArtistRank >= QqMusicLyricsProvider.ArtistMatchThreshold).ToList()
-                : scored;
 
             var sawInstrumental = false;
             var attempts = 0;
@@ -83,14 +87,18 @@ public sealed class NeteaseLyricsProvider : ILyricsProvider
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(string title, string artist, int? durationMs)
+    public async Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(LyricsQuery query)
     {
+        var title = query.Title;
+        var artist = query.Artist;
+        var durationMs = query.DurationMs;
         try
         {
             var results = await SearchAsync(title, artist, durationMs);
             var hasExpectedArtist = !string.IsNullOrWhiteSpace(artist);
+            // 手动选择是自动匹配失败后的唯一纠正通道，绝不能套用和自动链相同的硬门槛。
+            // 只排序、不过滤，由用户根据 ArtistMatched / MatchScore 判断。
             return results
-                .Where(r => QqMusicLyricsProvider.TitlesRelated(r.Title ?? title, title))
                 .Select((r, index) => new
                 {
                     Candidate = new LyricCandidate(
@@ -142,7 +150,7 @@ public sealed class NeteaseLyricsProvider : ILyricsProvider
     }
 
     /// <summary>按歌曲 ID 取词并解析：Yrc（逐字）优先，无 Yrc 回退 Lrc；翻译按时间对齐</summary>
-    private async Task<LyricsResult> LoadByIdAsync(string id, string titleForLog)
+    private static async Task<LyricsResult> LoadByIdAsync(string id, string titleForLog)
     {
         try
         {

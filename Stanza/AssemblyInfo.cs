@@ -1,11 +1,14 @@
 using System.Windows;
+using System.Runtime.InteropServices;
 
+// 所有平台 P/Invoke 只从 System32 搜索，避免被同名 DLL 劫持。
+[assembly: DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
 // WPF 主题资源位置声明：主题资源与通用资源都编译在当前程序集内。
 [assembly: ThemeInfo(
     ResourceDictionaryLocation.None, //where theme specific resource dictionaries are located
-    //(used if a resource is not found in the page,
-    // or application resource dictionaries)
+                                     //(used if a resource is not found in the page,
+                                     // or application resource dictionaries)
     ResourceDictionaryLocation.SourceAssembly //where the generic resource dictionary is located
-    //(used if a resource is not found in the page,
-    // app, or any theme specific resource dictionaries)
+                                              //(used if a resource is not found in the page,
+                                              // app, or any theme specific resource dictionaries)
 )]
