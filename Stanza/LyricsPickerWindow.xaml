@@ -4,6 +4,7 @@
         Title="选择歌词"
         Width="460" Height="500"
         WindowStartupLocation="CenterScreen"
+        Topmost="True"
         ResizeMode="CanResize"
         MinWidth="380" MinHeight="300"
         FontFamily="Segoe UI Variable, Segoe UI, Microsoft YaHei UI"
@@ -25,9 +26,9 @@
             <DockPanel Margin="0,10,0,0">
                 <Button x:Name="RetryButton" DockPanel.Dock="Right" Content="重新搜索"
                         Padding="8,3" Click="Retry_Click" IsEnabled="False" />
-                <CheckBox x:Name="ShowAllCheckBox" Content="显示全部搜索结果"
+                <CheckBox x:Name="ShowOtherArtistsCheckBox" Content="显示其他歌手的同名版本"
                           VerticalAlignment="Center" IsEnabled="False"
-                          Checked="ShowAll_Changed" Unchecked="ShowAll_Changed" />
+                          Checked="ShowOtherArtists_Changed" Unchecked="ShowOtherArtists_Changed" />
             </DockPanel>
         </StackPanel>
 

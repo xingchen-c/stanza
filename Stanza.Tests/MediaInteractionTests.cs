@@ -47,7 +47,7 @@ public class MediaInteractionTests
         LyricCandidate[] all = [expected, wrongTitle, wrongArtist, unknownArtist];
 
         Assert.Equal([expected, unknownArtist], LyricsPickerWindow.FilterCandidates(all, false));
-        Assert.Same(all, LyricsPickerWindow.FilterCandidates(all, true));
+        Assert.Equal([expected, wrongArtist, unknownArtist], LyricsPickerWindow.FilterCandidates(all, true));
     }
 
     [Fact]
@@ -67,11 +67,11 @@ public class MediaInteractionTests
     }
 
     [Fact]
-    public void Filter_没有相关结果不会自动显示异歌()
+    public void Filter_没有相关结果时勾选其他歌手也不显示异歌()
     {
         var wrongTitle = Candidate("回旋", false, true);
         Assert.Empty(LyricsPickerWindow.FilterCandidates([wrongTitle], false));
-        Assert.Equal([wrongTitle], LyricsPickerWindow.FilterCandidates([wrongTitle], true));
+        Assert.Empty(LyricsPickerWindow.FilterCandidates([wrongTitle], true));
     }
 
     [Theory]

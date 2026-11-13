@@ -45,6 +45,16 @@ public class QqCandidateSelectionTests
     [InlineData("Song (Live)", "Song - Live Version", true)]
     [InlineData("Song - Live Version", "Song (Live)", true)]
     [InlineData("Song - Other Song", "Song", false)]
+    [InlineData("题都城南庄 (古诗诵读)", "题都城南庄", false)]
+    [InlineData("题都城南庄(儿童古诗词)", "题都城南庄", false)]
+    [InlineData("题都城南庄(崔护·唐)", "题都城南庄", false)]
+    [InlineData("题都城南庄（朗诵）", "题都城南庄", false)]
+    [InlineData("题都城南庄 (儿童精选古诗词)", "题都城南庄", false)]
+    [InlineData("题都城南庄", "题都城南庄（朗诵）", false)]
+    [InlineData("题都城南庄（朗诵）", "题都城南庄（朗诵）", true)]
+    [InlineData("题都城南庄（Live）", "题都城南庄", true)]
+    [InlineData("题都城南庄 (伴奏版)", "题都城南庄", true)]
+    [InlineData("Song (Remix)", "Song - Remix", true)]
     [InlineData("Stairway to Heaven", " stairway TO heaven ", true)]
     [InlineData("花", "花", true)]
     [InlineData("", "", false)]
@@ -145,6 +155,31 @@ public class QqCandidateSelectionTests
         Assert.All(candidates.Take(2), x => Assert.True(x.TitleMatched));
         Assert.All(candidates.Skip(2), x => Assert.False(x.TitleMatched));
         Assert.False(external.TitleMatched); // 链只标注副本，不污染提供器持有的对象。
+    }
+
+    [Fact]
+    public async Task 选词列表_过滤截图中的异歌及朗诵作品_勾选只放宽歌手()
+    {
+        var query = new LyricsQuery("题都城南庄", "岑今山（停用）", 200000);
+        var related = new LyricCandidate("QQ", "QQ 音乐", "related", "题都城南庄（Live）", "岑今山", null, null, null)
+            { ArtistMatched = true };
+        var otherArtist = related with { Id = "other-artist", Artist = "其他歌手", ArtistMatched = false };
+        var source = new CandidateProvider("QQ",
+        [
+            related,
+            otherArtist,
+            related with { Id = "island", Title = "屿" },
+            related with { Id = "reading", Title = "题都城南庄（朗诵）", ArtistMatched = false },
+            related with { Id = "poem", Title = "题都城南庄 (古诗诵读)", ArtistMatched = false },
+            related with { Id = "children", Title = "题都城南庄(儿童古诗词)", ArtistMatched = false },
+            related with { Id = "poet", Title = "题都城南庄(崔护·唐)", ArtistMatched = false }
+        ]);
+
+        var candidates = await new LyricsProviderChain(source).GetCandidatesAsync(query);
+
+        Assert.Equal(["related"], LyricsPickerWindow.FilterCandidates(candidates, false).Select(candidate => candidate.Id));
+        Assert.Equal(["related", "other-artist"],
+            LyricsPickerWindow.FilterCandidates(candidates, true).Select(candidate => candidate.Id));
     }
 
     [Fact]

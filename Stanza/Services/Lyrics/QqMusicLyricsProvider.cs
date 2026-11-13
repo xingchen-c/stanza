@@ -564,15 +564,17 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
     private static string NormalizeCoreTitle(string title)
     {
         var core = StripLeadingBracket(title) ?? title.Trim();
-        core = StripTrailingParenthetical(core) ?? core;
+        // 搜索可去掉任意括号以增加召回，但判定同曲只能去掉明确版本；朗诵、诗词作者等副标题不能忽略。
+        var open = core.LastIndexOfAny(['(', '（']);
+        if (open > 0 && core[^1] is (')' or '）') && IsVersionSuffix(core[(open + 1)..^1]))
+            core = core[..open].TrimEnd();
         // 只清理明确分隔的版本后缀，不截断正常歌名中的连字符或任意副标题。
         foreach (var separator in new[] { " - ", " – ", " — " })
         {
             var index = core.LastIndexOf(separator, StringComparison.Ordinal);
             if (index <= 0)
                 continue;
-            var suffix = Normalize(core[(index + separator.Length)..]);
-            if (suffix is "live" or "liveversion" or "remix" or "伴奏" or "现场版" or "剧情版")
+            if (IsVersionSuffix(core[(index + separator.Length)..]))
             {
                 core = core[..index];
                 break;
@@ -580,6 +582,10 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
         }
         return Normalize(core);
     }
+
+    private static bool IsVersionSuffix(string suffix)
+        => Normalize(suffix) is "live" or "liveversion" or "live版" or "remix" or "remix版"
+            or "伴奏" or "伴奏版" or "现场版" or "剧情版";
 
     /// <summary>规范化：去空白、转小写，便于包含判断</summary>
     internal static string Normalize(string s)

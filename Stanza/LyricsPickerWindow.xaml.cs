@@ -93,7 +93,7 @@ public partial class LyricsPickerWindow : Window
             return;
 
         var previous = (CandidateList.SelectedItem as CandidateView)?.Candidate;
-        var candidates = FilterCandidates(_candidates, ShowAllCheckBox.IsChecked == true);
+        var candidates = FilterCandidates(_candidates, ShowOtherArtistsCheckBox.IsChecked == true);
         var views = candidates.Select(ToView).ToList();
         CandidateList.ItemsSource = views;
         CandidateList.SelectedItem = views.FirstOrDefault(view => view.Candidate == previous);
@@ -103,20 +103,17 @@ public partial class LyricsPickerWindow : Window
         StatusText.Text = candidates.Count == 0
             ? _candidates.Count == 0
                 ? "暂未获取到候选，可重新搜索。"
-                : "未找到歌名匹配的候选，可勾选“显示全部搜索结果”查找。"
+                : "未找到歌名匹配的歌词版本，已过滤其他歌曲，可重新搜索。"
             : $"找到 {candidates.Count} 个歌词版本，选择后点击应用。";
         UpdateControls();
     }
 
-    /// <summary>只消费匹配链路的结论；无同歌手结果时保留别名或信息缺失的纠错入口。</summary>
+    /// <summary>歌名过滤始终生效；勾选时只放宽歌手限制，无同歌手结果时保留别名纠错入口。</summary>
     internal static IReadOnlyList<LyricCandidate> FilterCandidates(
-        IReadOnlyList<LyricCandidate> candidates, bool showAll)
+        IReadOnlyList<LyricCandidate> candidates, bool showOtherArtists)
     {
-        if (showAll)
-            return candidates;
-
         var related = candidates.Where(candidate => candidate.TitleMatched != false).ToList();
-        return related.Any(candidate => candidate.ArtistMatched == true)
+        return !showOtherArtists && related.Any(candidate => candidate.ArtistMatched == true)
             ? related.Where(candidate => candidate.ArtistMatched != false).ToList()
             : related;
     }
@@ -196,13 +193,13 @@ public partial class LyricsPickerWindow : Window
         ApplyButton.IsEnabled = !_busy && !_stale && CandidateList.SelectedItem is CandidateView;
         RetryButton.IsEnabled = !_busy && !_stale;
         CandidateList.IsEnabled = !_busy && !_stale;
-        ShowAllCheckBox.IsEnabled = !_busy && !_stale;
+        ShowOtherArtistsCheckBox.IsEnabled = !_busy && !_stale;
         LoadingProgress.Visibility = _busy && !_stale ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private async void Retry_Click(object sender, RoutedEventArgs e) => await LoadCandidatesAsync();
 
-    private void ShowAll_Changed(object sender, RoutedEventArgs e) => RefreshCandidates();
+    private void ShowOtherArtists_Changed(object sender, RoutedEventArgs e) => RefreshCandidates();
 
     private void CandidateList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {

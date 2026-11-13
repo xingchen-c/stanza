@@ -4,8 +4,19 @@ obj/
 riderModule.iml
 /_ReSharper.Caches/
 
+# 本地 AI 工具与 IDE 配置
 .idea
 .codex
 .zcode
+.openidea
 
 *.DotSettings.user
+
+# 仅维护现行公开文档；历史方案和对话记录保留在本地。
+/doc/*
+!/doc/README.md
+!/doc/HANDOVER.md
+!/doc/ROADMAP.md
+!/doc/MATCH-SCORING.md
+!/doc/SMTC-SOURCE-POLICY-IMPLEMENTATION-PLAN.md
+!/doc/SOFTWARE-RENDER-FALLBACK.md

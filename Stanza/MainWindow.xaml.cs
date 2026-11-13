@@ -342,7 +342,10 @@ public partial class MainWindow
             context,
             _smtc.GetLyricCandidatesAsync,
             _smtc.ApplyLyricCandidateAsync,
-            _smtc.IsLyricsSelectionCurrent);
+            _smtc.IsLyricsSelectionCurrent)
+        {
+            Owner = this
+        };
         _lyricsPicker = window;
         try
         {
