@@ -26,7 +26,7 @@
 - QQ 音乐桌面版：请在设置中开启「系统媒体传输控制（SMTC）」
 - 网易云音乐桌面版：已接入专用播放源策略；由于各版本 SMTC 事件质量不同，暂停恢复和切歌仍在持续实机验收，seek 尚未支持
 - 其他播放器：需发布标准 SMTC 会话；目前只保证通用链路可用，尚未逐一完成实机验收
-- [.NET 11 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/11.0)（框架依赖版需要；自包含包无需安装）
+- [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)（框架依赖版需要；自包含包无需安装）
 
 ## 安装与使用
 
@@ -38,10 +38,10 @@
 
 ## 从源码构建
 
-需安装 .NET 11 SDK。在仓库根目录（含 `Stanza.slnx` 的那层）执行：
+需安装 .NET 10 SDK（LTS）。`global.json` 允许稳定版 10.0 的功能带与补丁升级，不会自动选用 .NET 11。在仓库根目录（含 `Stanza.slnx` 的那层）执行：
 
 ```bash
-# 框架依赖版（需 .NET 11 Desktop Runtime，体积小）
+# 框架依赖版（需 .NET 10 Desktop Runtime，体积小）
 dotnet publish Stanza\Stanza.csproj -c Release -o ..\dist\release
 
 # 自包含单文件版（免安装，体积约 100MB）
@@ -66,7 +66,7 @@ dotnet publish Stanza\Stanza.csproj -c Release -r win-x64 --self-contained true 
 
 **需要额外安装什么？**
 
-自包含包（`*-selfcontained`）免安装直接运行；框架依赖包需要安装 .NET 11 Desktop Runtime。
+自包含包（`*-selfcontained`）免安装直接运行；框架依赖包需要安装 .NET 10 Desktop Runtime。
 
 ## 许可证
 

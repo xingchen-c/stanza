@@ -6,7 +6,7 @@
 
 Stanza 是 Windows 11 任务栏上的轻量歌词小组件，基于 SMTC 获取播放上下文，显示同步歌词、逐字卡拉 OK、翻译、封面和播放控制。
 
-- .NET 11 / WPF；WinForms 只用于托盘。目标框架为 `net11.0-windows10.0.22621.0`。
+- .NET 10 LTS / WPF；WinForms 只用于托盘。目标框架为 `net10.0-windows10.0.22621.0`；`global.json` 限定稳定版 10.0 SDK，不跨主版本滚动。
 - 当前优先维护 QQ 音乐主流程；网易云播放策略保留，新增适配暂缓。
 - 播放器来源与歌词来源相互独立；QQ 播放器也可以使用网易云或 LRCLIB 的歌词。
 - 无 DI 框架、无动态插件；优先小步原地演进，不重写整个仓库。
@@ -118,6 +118,6 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 5. 不自动启动 Debug 版，不关闭或操控用户正在运行的 Stanza / 播放器。需要真实界面或实网验证时先明确授权与范围。
 6. 本机更新发布固定在 `../dist/release`，不另建修复目录，不强杀进程。
 
-.NET 11 在 Windows 上的 `Environment.TickCount` 不再计入睡眠/休眠时间；休眠恢复需人工验收，不能把未复现的时序问题直接归因于升级。[官方说明](https://learn.microsoft.com/en-us/dotnet/core/compatibility/core-libraries/11/environment-tickcount-windows-behavior)
+当前使用 .NET 10 LTS，不能套用 .NET 11 才引入的 `Environment.TickCount` 睡眠计时变化。休眠恢复仍需人工验收；本轮只调整目标框架和 SDK 选择，不改播放计时逻辑。
 
 待办与优先级只在 [ROADMAP.md](./ROADMAP.md) 维护；跨源候选决策仍是计划，不是本轮已完成功能。

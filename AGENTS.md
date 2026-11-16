@@ -13,7 +13,7 @@
 
 ## 2. 技术栈与工程
 
-- .NET 11，`TargetFramework: net11.0-windows10.0.22621.0`
+- .NET 10 LTS，`TargetFramework: net10.0-windows10.0.22621.0`；`global.json` 限定稳定版 10.0 SDK，允许同版本内的功能带与补丁升级
 - WPF（主界面）+ WinForms（仅托盘 `TrayIconService`）
 - 主要第三方依赖：`Lyricify.Lyrics.Helper`（歌词搜索/解析/解密）、`Microsoft.Data.Sqlite`（缓存与选择记忆）、`Serilog` / 文件与异步 sink（日志）
 - 测试：xUnit 2.9 + Microsoft.NET.Test.Sdk
@@ -24,7 +24,7 @@
 所有命令在**仓库根（含 `Stanza.slnx` 的那层）**执行：
 
 ```bash
-# 构建（需 .NET 11 SDK，先确认 dotnet --version）
+# 构建（需 .NET 10 SDK，先确认 dotnet --version）
 dotnet build Stanza.slnx -c Release
 
 # 测试（真实日志初始化会访问用户数据目录，需先确认副作用范围）
@@ -40,7 +40,7 @@ dotnet publish Stanza/Stanza.csproj -c Release -r win-x64 --self-contained true 
 iscc Stanza.iss
 ```
 
-最近验证（2026-11-13）：真实仓库 Release 构建 0 错误、1 个既有 WFO2000 警告；隔离日志镜像 **186/186** 测试通过。镜像仅将 `LogService.cs` 替换为无 IO 的 AppLog，真实日志目录、清理、sink 和 Flush 不在其覆盖范围；不能把该结果当作上面原程序集命令已在无副作用环境执行的证明。详细边界见 `doc/README.md`。
+最近验证（2026-11-16，.NET 10 LTS，SDK 10.0.404）：真实仓库 Release solution 构建 0 警告、0 错误；隔离日志镜像 **186/186** 测试通过。本次未更新发布目录。镜像仅将 `LogService.cs` 替换为无 IO 的 AppLog，真实日志目录、清理、sink 和 Flush 不在其覆盖范围；不能把该结果当作上面原程序集命令已在无副作用环境执行的证明。详细边界见 `doc/README.md`。
 
 本机发布覆盖前先由用户退出 Stanza，不强杀、不自动启动 Debug 版；不要操控用户正在运行的播放器。自包含包、ZIP 和安装包不会随框架依赖发布自动更新，需单独授权与验证。
 
