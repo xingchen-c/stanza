@@ -4,7 +4,7 @@
 
 ## 1. 项目是什么
 
-**Stanza**（前身 FluentLyrics）——常驻 Windows 11 任务栏的歌词小组件（GPL-3.0，v0.2.0）。
+**Stanza**（前身 FluentLyrics）——常驻 Windows 11 任务栏的歌词小组件（GPL-3.0）。应用版本只在 `Stanza/Stanza.csproj` 的 `<Version>` 维护，发布约定见根 README。
 监听系统媒体会话（SMTC），实时显示当前播放器歌词：卡拉 OK 逐字揭晓、非中文歌中文翻译、长歌词跟随滚动、任务栏定位。当前优先稳定 QQ 音乐主流程；网易云音乐已有独立播放源策略，但新增适配与完整实机验收暂缓；其他播放器走 Generic SMTC 策略。这不影响网易云歌词源参与回退。
 
 - **定位**：任务栏上「歌词优先」的轻量叠加卡片；长期演进为「任务栏音乐中心」（见 `doc/ROADMAP.md` 的 A/B 形态）。
@@ -33,16 +33,16 @@ dotnet test Stanza.slnx -c Release --no-build
 # 发布（框架依赖版；本机更新固定在此目录，不另建修复目录）
 dotnet publish Stanza/Stanza.csproj -c Release --self-contained false -o ../dist/release
 
-# 发布（自包含单文件，~100MB）
-dotnet publish Stanza/Stanza.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ../dist/Stanza-0.2.0-win-x64
+# 打包（自包含 portable ZIP + SHA256，需 PowerShell 7；自动读取项目版本）
+./scripts/Package.ps1
 
-# 安装包（需 Inno Setup 6，iscc 在 PATH）
-iscc Stanza.iss
+# 额外生成安装包（需 Inno Setup 6，iscc 在 PATH）
+./scripts/Package.ps1 -Installer
 ```
 
-最近验证（2026-11-16，.NET 10 LTS，SDK 10.0.404）：真实仓库 Release solution 构建 0 警告、0 错误；隔离日志镜像 **186/186** 测试通过。本次未更新发布目录。镜像仅将 `LogService.cs` 替换为无 IO 的 AppLog，真实日志目录、清理、sink 和 Flush 不在其覆盖范围；不能把该结果当作上面原程序集命令已在无副作用环境执行的证明。详细边界见 `doc/README.md`。
+最近验证（2026-11-17，.NET 10 LTS，SDK 10.0.404）：真实仓库 Release solution 构建 0 警告、0 错误；隔离日志镜像 **192/192** 测试通过。portable ZIP、SHA256 和安装器仅在临时目录验证，未覆盖 `dist` 中的现有产物。镜像仅禁用 `LogService.cs` 的真实日志初始化，保留日志级别和调用 API；真实日志目录、清理、sink 和 Flush 不在其覆盖范围。详细边界见 `doc/README.md`。
 
-本机发布覆盖前先由用户退出 Stanza，不强杀、不自动启动 Debug 版；不要操控用户正在运行的播放器。自包含包、ZIP 和安装包不会随框架依赖发布自动更新，需单独授权与验证。
+本机发布覆盖前先由用户退出 Stanza，不强杀、不自动启动 Debug 版；不要操控用户正在运行的播放器。自包含包、ZIP 和安装包不会随框架依赖发布自动更新，需单独授权与验证。`scripts/Package.ps1` 默认输出到 `../dist`，拒绝覆盖已有版本；验证时传临时 `-OutputDirectory`。发布标签必须为 `v<Version>`，可用 `-ReleaseTag` 检查名称；不自动打标签或推送。
 
 ## 4. 代码结构速查
 

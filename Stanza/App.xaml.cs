@@ -1,5 +1,4 @@
 using System.IO;
-using System.Reflection;
 using System.Text;
 using System.Windows;
 using System.Windows.Threading;
@@ -41,7 +40,7 @@ public partial class App
             return;
         }
 
-        AppLog.Info($"应用启动 v{Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "?"}");
+        AppLog.Info($"应用启动 v{AppVersion.Full}");
         Services = new AppServices();
     }
 
@@ -122,7 +121,7 @@ public partial class App
             var sb = new StringBuilder();
             sb.AppendLine($"时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}");
             sb.AppendLine($"来源: {source}");
-            sb.AppendLine($"版本: {Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)}");
+            sb.AppendLine($"版本: {AppVersion.Full}");
             sb.AppendLine($"系统: {Environment.OSVersion}");
             sb.AppendLine($"进程: {Environment.ProcessPath}");
             sb.AppendLine($"异常: {ex}");

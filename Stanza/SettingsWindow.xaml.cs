@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -56,10 +55,7 @@ public partial class SettingsWindow
         OffsetSlider.ValueChanged += (_, _) => OffsetValue.Text = $"{OffsetSlider.Value:F0} ms";
         WidthSlider.ValueChanged += (_, _) => WidthValue.Text = $"{WidthSlider.Value:F0} px";
 
-        // 页头版本号
-        var version = Assembly.GetExecutingAssembly().GetName().Version;
-        if (version is not null)
-            VersionText.Text = $"v{version.Major}.{version.Minor}.{version.Build}";
+        VersionText.Text = $"v{AppVersion.Display}";
 
         foreach (ComboBoxItem item in DirectionCombo.Items)
             if (item.Tag?.ToString() == settings.PlacementDirection)

@@ -40,13 +40,38 @@
 
 需安装 .NET 10 SDK（LTS）。`global.json` 允许稳定版 10.0 的功能带与补丁升级，不会自动选用 .NET 11。在仓库根目录（含 `Stanza.slnx` 的那层）执行：
 
-```bash
+```powershell
 # 框架依赖版（需 .NET 10 Desktop Runtime，体积小）
-dotnet publish Stanza\Stanza.csproj -c Release -o ..\dist\release
+dotnet publish Stanza/Stanza.csproj -c Release --self-contained false -o ../dist/release
 
-# 自包含单文件版（免安装，体积约 100MB）
-dotnet publish Stanza\Stanza.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ..\dist\Stanza-0.2.0-win-x64
+# 自包含 portable ZIP + SHA256（需 PowerShell 7；版本从主项目读取）
+./scripts/Package.ps1
+
+# 额外生成安装包（需 Inno Setup 6，iscc 在 PATH）
+./scripts/Package.ps1 -Installer
 ```
+
+上面两个打包命令二选一，`-Installer` 会同时生成 ZIP 和安装包。
+
+打包脚本默认输出到仓库外的 `../dist`，不会更新 `dist/release`；可用 `-OutputDirectory` 指定其他输出目录。portable 是程序免安装版，配置仍保存在 `%APPDATA%\Stanza`，不是数据随身版。相同版本的输出已存在时脚本会停止，不覆盖旧包。
+
+## 版本与发布约定
+
+- 使用 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。在 `0.x` 阶段，小修复或随包运行时更新递增修订号，功能新增或较大改进递增次版本号；使用与升级约定稳定后进入 `1.0.0`。
+- **唯一版本来源是 `Stanza/Stanza.csproj` 的 `<Version>`**。只修改这一处；不要修改第三方依赖自身的版本号来同步应用版本。预发布使用 `-alpha.N`、`-beta.N` 或 `-rc.N`。
+- 设置页展示产品版本（保留预发布后缀）；日志、崩溃报告保留完整信息版本和 SDK 自动附加的 Git 提交号。Windows 数字文件版本不包含预发布后缀。
+- 打包脚本读取项目版本，并将同一版本用于 portable ZIP、SHA256、安装包和安装器元信息；`Stanza.iss` 不再手填版本。
+- 正式发布前先提交并通过构建、回归及包验收，再创建 `v<Version>` 标签；GitHub/Gitee 的 Release 使用同一标签及同一份附件，不把平台自动生成的源码 ZIP 当成程序包。
+- 已公开的版本内容不可替换；即使只修复打包遗漏或更新内置运行时，也递增版本后重新发布。Git 构建信息不代替可排序的版本号。
+- Release 和未来的 Scoop 清单应与项目版本、下载文件名、SHA256 一致。当前没有自动创建 Release 或更新 Scoop 清单的流程；预发布不进入默认稳定版清单。
+
+以 `0.3.0` 为例，对应标签 `v0.3.0`、`Stanza-0.3.0-win-x64-portable.zip`、`Stanza-0.3.0-setup.exe`。发布或 CI 打包时传入标签做一致性检查：
+
+```powershell
+./scripts/Package.ps1 -ReleaseTag v0.3.0
+```
+
+`-ReleaseTag` 只校验传入的标签名称，不创建、推送或验证远程标签。脚本也不会创建 Release、提交或推送代码。
 
 ## 配置
 
@@ -66,7 +91,7 @@ dotnet publish Stanza\Stanza.csproj -c Release -r win-x64 --self-contained true 
 
 **需要额外安装什么？**
 
-自包含包（`*-selfcontained`）免安装直接运行；框架依赖包需要安装 .NET 10 Desktop Runtime。
+自包含 portable ZIP（`*-portable.zip`）完整解压后免安装运行；框架依赖包需要安装 .NET 10 Desktop Runtime。
 
 ## 许可证
 
