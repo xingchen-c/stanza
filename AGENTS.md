@@ -36,15 +36,15 @@ dotnet publish Stanza/Stanza.csproj -c Release --self-contained false -o ../dist
 # 打包（自包含 portable ZIP + SHA256，需 PowerShell 7；自动读取项目版本）
 ./scripts/Package.ps1
 
-# 额外生成安装包（需 Inno Setup 6，iscc 在 PATH）
-./scripts/Package.ps1 -Installer
+# 生成带/不带运行时的 ZIP、安装包及 SHA256（需 Inno Setup 6/7，iscc 在 PATH）
+./scripts/Package.ps1 -Deployment All -Installer
 ```
 
-最近验证（2026-11-19，.NET 10 LTS，SDK 10.0.404）：真实仓库 Release solution 构建 0 警告、0 错误；真实源码 **199/199** 测试通过，测试初始化器将数据隔离到独立临时目录，未替换日志实现。发布工作流的构建、测试和打包步骤已本地演练，临时目录 ZIP 完整性、自包含运行时、SQLite、许可及 SHA256 检查通过；云端运行与 Release 上传尚未触发，安装器最近一次于 2026-11-17 验证，现有 `dist` 未覆盖。旧日志清理、滚动与退出 Flush 未做专项验收。详细边界见 `doc/README.md`。
+最近验证（2026-11-19，.NET 10 LTS，SDK 10.0.404）：真实仓库 Release solution 构建 0 警告、0 错误；真实源码 **199/199** 测试通过，测试初始化器将数据隔离到独立临时目录，未替换日志实现。`v0.3.0` 已完成 GitHub 云端发布；本轮四种包在临时目录完成编译及 SHA256 检查，两种 ZIP 的运行时模式、压缩完整性、SQLite 和许可检查通过。安装器使用 Inno Setup 7.1.1 编译，未实际安装或启动应用，运行时缺失提示仍需人工验收。现有 `dist` 未覆盖；旧日志清理、滚动与退出 Flush 未做专项验收。详细边界见 `doc/README.md`。
 
 本机发布覆盖前先由用户退出 Stanza，不强杀、不自动启动 Debug 版；不要操控用户正在运行的播放器。自包含包、ZIP 和安装包不会随框架依赖发布自动更新，需单独授权与验证。`scripts/Package.ps1` 默认输出到 `../dist`，拒绝覆盖已有版本；验证时传临时 `-OutputDirectory`。发布标签必须为 `v<Version>`，可用 `-ReleaseTag` 检查名称；不自动打标签或推送。
 
-`.github/workflows/release.yml` 在 GitHub 收到 `v*` 标签时，使用 Windows runner 校验版本、构建、测试、打包并发布自包含 ZIP 与 SHA256；需要标签提交已包含工作流及待发布源码。Gitee 附件同步、Scoop 清单更新及安装包不在当前自动流程中。推送标签会触发公开发布，仍需用户明确授权。
+`.github/workflows/release.yml` 在 GitHub 收到 `v*` 标签时，使用 Windows runner 校验版本、构建、测试，安装 Inno Setup，生成带/不带运行时的 ZIP 与 EXE，并发布四种程序包及各自的 SHA256；需要标签提交已包含工作流及待发布源码。Gitee 附件同步和 Scoop 清单更新不在应用发布流程中。推送标签会触发公开发布，仍需用户明确授权。
 
 ## 4. 代码结构速查
 

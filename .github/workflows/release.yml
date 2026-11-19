@@ -44,9 +44,17 @@ jobs:
       - name: Test
         run: dotnet test Stanza.slnx -c Release --no-build --no-restore
 
-      - name: Package portable ZIP and SHA256
+      - name: Set up Inno Setup
         run: |
-          ./scripts/Package.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'stanza-release') -ReleaseTag $env:RELEASE_TAG
+          choco install innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw '安装 Inno Setup 失败。' }
+          $compiler = Get-ChildItem -Path "$env:ProgramFiles/Inno Setup*/ISCC.exe", "${env:ProgramFiles(x86)}/Inno Setup*/ISCC.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (!$compiler) { throw '未找到 Inno Setup 编译器。' }
+          $compiler.DirectoryName >> $env:GITHUB_PATH
+
+      - name: Package ZIPs, installers and SHA256
+        run: |
+          ./scripts/Package.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'stanza-release') -ReleaseTag $env:RELEASE_TAG -Deployment All -Installer
 
       - name: Publish GitHub Release
         env:
@@ -54,10 +62,9 @@ jobs:
           GH_REPO: ${{ github.repository }}
           APP_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          $zip = Join-Path $env:RUNNER_TEMP "stanza-release/Stanza-$env:APP_VERSION-win-x64-portable.zip"
-          $releaseArguments = @(
-              'release', 'create', $env:RELEASE_TAG,
-              $zip, "$zip.sha256",
+          $packageDirectory = Join-Path $env:RUNNER_TEMP 'stanza-release'
+          $artifacts = @(Get-ChildItem -LiteralPath $packageDirectory -File | Where-Object Extension -In '.zip', '.exe', '.sha256' | ForEach-Object FullName)
+          $releaseArguments = @('release', 'create', $env:RELEASE_TAG) + $artifacts + @(
               '--verify-tag', '--title', "Stanza $env:RELEASE_TAG", '--generate-notes'
           )
           if ($env:APP_VERSION.Contains('-')) { $releaseArguments += '--prerelease' }

@@ -7,7 +7,7 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <UseWPF>true</UseWPF>
         <UseWindowsForms>true</UseWindowsForms>
-        <Version>0.3.0</Version>
+        <Version>0.3.1</Version>
         <!-- 桌面小工具用 Workstation GC：22 核机器上 Server GC 会预分配大量堆内存（实测 800MB+），
              工作站 GC 完全够用且内存占用低一个量级 -->
         <ServerGarbageCollection>false</ServerGarbageCollection>

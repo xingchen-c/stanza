@@ -47,11 +47,17 @@ dotnet publish Stanza/Stanza.csproj -c Release --self-contained false -o ../dist
 # 自包含 portable ZIP + SHA256（需 PowerShell 7；版本从主项目读取）
 ./scripts/Package.ps1
 
-# 额外生成安装包（需 Inno Setup 6，iscc 在 PATH）
+# 额外生成自包含安装包（需 Inno Setup 6/7，iscc 在 PATH）
 ./scripts/Package.ps1 -Installer
+
+# 同时生成四种包及各自的 SHA256
+./scripts/Package.ps1 -Deployment All -Installer
+
+# 只生成不带运行时的便携 ZIP
+./scripts/Package.ps1 -Deployment FrameworkDependent
 ```
 
-上面两个打包命令二选一，`-Installer` 会同时生成 ZIP 和安装包。
+`Deployment` 默认是 `SelfContained`（带运行时）；`FrameworkDependent` 不带运行时，`All` 同时生成两种。`-Installer` 为选中的每种模式额外生成 EXE，ZIP 和 EXE 均附带独立 SHA256 文件。
 
 打包脚本默认输出到仓库外的 `../dist`，不会更新 `dist/release`；可用 `-OutputDirectory` 指定其他输出目录。portable 是程序免安装版；数据目录可通过 `STANZA_DATA_DIR` 指定，未设置时使用 `%APPDATA%\Stanza`。相同版本的输出已存在时脚本会停止，不覆盖旧包。
 
@@ -65,10 +71,10 @@ dotnet publish Stanza/Stanza.csproj -c Release --self-contained false -o ../dist
 - 已公开的版本内容不可替换；即使只修复打包遗漏或更新内置运行时，也递增版本后重新发布。Git 构建信息不代替可排序的版本号。
 - Release 和未来的 Scoop 清单应与项目版本、下载文件名、SHA256 一致。GitHub Release 由标签触发的工作流创建；Gitee 附件同步与 Scoop 清单更新尚未接入，预发布不进入默认稳定版清单。
 
-以 `0.3.0` 为例，对应标签 `v0.3.0`、`Stanza-0.3.0-win-x64-portable.zip`、`Stanza-0.3.0-setup.exe`。发布或 CI 打包时传入标签做一致性检查：
+以 `0.3.1` 为例，对应标签 `v0.3.1`。带运行时包保持原文件名，不带运行时包增加 `-no-runtime` 后缀。发布或 CI 打包时传入标签做一致性检查：
 
 ```powershell
-./scripts/Package.ps1 -ReleaseTag v0.3.0
+./scripts/Package.ps1 -ReleaseTag v0.3.1 -Deployment All -Installer
 ```
 
 `-ReleaseTag` 只校验传入的标签名称，不创建、推送或验证远程标签。脚本也不会创建 Release、提交或推送代码。
@@ -77,24 +83,28 @@ dotnet publish Stanza/Stanza.csproj -c Release --self-contained false -o ../dist
 
 [发布工作流](.github/workflows/release.yml) 在推送 `v*` 标签时执行。标签所指的提交必须包含这份工作流，以及本次准备发布的代码；仅推送分支不会发布版本。
 
-工作流使用 Windows runner 和 .NET 10 SDK，依次校验标签与项目版本、构建 Release、运行测试，再调用 `scripts/Package.ps1` 生成 Windows x64 自包含 ZIP 和 SHA256。测试数据自动隔离到临时目录。任何一步失败都会停止，后续不发布；现有同名 Release 不会被覆盖。
+工作流使用 Windows runner 和 .NET 10 SDK，依次校验标签与项目版本、构建 Release、运行测试，安装 Inno Setup，再调用 `scripts/Package.ps1 -Deployment All -Installer` 生成四种 Windows x64 程序包和 SHA256。测试数据自动隔离到临时目录。任何一步失败都会停止，后续不发布；现有同名 Release 不会被覆盖。
 
 发布使用 GitHub 内置的 `GITHUB_TOKEN`，工作流已声明 `contents: write`，无需额外创建个人令牌。仓库需允许 GitHub Actions 运行。带 `alpha` / `beta` / `rc` 后缀的版本会标记为预发布。
 
-第一次使用前，先提交工作流和需要发布的源码。下面以项目版本 `0.3.0` 为例，命令在仓库根目录执行；`github` 是本仓库配置的 GitHub 远程名：
+发布前先提交需要发布的源码。下面以项目版本 `0.3.1` 为例，命令在仓库根目录执行；`github` 是本仓库配置的 GitHub 远程名：
 
 ```powershell
 git push github master
-git tag -a v0.3.0 -m "Stanza v0.3.0"
-git push github v0.3.0
+git tag -a v0.3.1 -m "Stanza v0.3.1"
+git push github v0.3.1
 ```
 
 推送标签后，在仓库的 [Actions](https://github.com/xingchen-c/stanza/actions) 页面查看 `Release` 工作流。成功后，[Releases](https://github.com/xingchen-c/stanza/releases) 会提供：
 
-- `Stanza-0.3.0-win-x64-portable.zip`
-- `Stanza-0.3.0-win-x64-portable.zip.sha256`
+| 文件 | 是否自带运行时 | 使用方式 |
+| --- | --- | --- |
+| `Stanza-0.3.1-win-x64-portable.zip` | 是 | 完整解压后运行，Scoop 默认使用此包 |
+| `Stanza-0.3.1-win-x64-portable-no-runtime.zip` | 否 | 需预装 .NET 10 Desktop Runtime（x64） |
+| `Stanza-0.3.1-setup.exe` | 是 | 安装后运行 |
+| `Stanza-0.3.1-setup-no-runtime.exe` | 否 | 安装前检测运行时，缺少时提示打开官方下载页 |
 
-安装包 EXE 不在此自动流程中；如需生成，仍使用本地 `Package.ps1 -Installer`。下一次发布先修改项目版本并提交，再推送对应的新标签，不复用已经发布的标签。
+每个文件另附同名 `.sha256` 校验文件。不带运行时的安装器会按 x64 apphost 的顺序检查 `DOTNET_ROOT_X64`、`DOTNET_ROOT`，再检查注册表和默认位置；普通 .NET Runtime 不包含 WPF，不能替代 Desktop Runtime。下一次发布先修改项目版本并提交，再推送对应的新标签，不复用已经发布的标签。
 
 ## 配置
 
@@ -102,7 +112,7 @@ git push github v0.3.0
 
 数据目录内包含 `settings.json`、歌词缓存与手动选择记忆共用的 `stanza.db`，以及 `logs/`。删除 `settings.json` 可恢复默认设置。目录内的旧版 `lyrics-cache.json` / `lyrics-choice.json` 会在首次启动时迁移并改名为 `.migrated`。
 
-Scoop 清单可使用以下配置，让程序数据保存在实际 Scoop 根目录下的 `persist/stanza/data`，升级时继续保留（此处仅为数据配置片段，完整安装清单尚未提供）：
+Scoop 清单可使用以下配置，让程序数据保存在实际 Scoop 根目录下的 `persist/stanza/data`，升级时继续保留；完整清单由各自的 bucket 维护：
 
 ```json
 {
