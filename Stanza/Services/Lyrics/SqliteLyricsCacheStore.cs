@@ -7,7 +7,7 @@ using Stanza.Services.Storage;
 namespace Stanza.Services.Lyrics;
 
 /// <summary>
-///     歌词 SQLite 缓存：%APPDATA%\Stanza\stanza.db / lyrics_cache。
+///     歌词 SQLite 缓存：应用数据目录 stanza.db / lyrics_cache。
 ///     缓存 Loaded / Instrumental 结果及逐字、翻译时间轴；首次运行会迁移旧 lyrics-cache.json。
 /// </summary>
 public sealed class SqliteLyricsCacheStore : ILyricsCacheStore
@@ -27,9 +27,7 @@ public sealed class SqliteLyricsCacheStore : ILyricsCacheStore
     private static string LegacyCachePath =>
         Environment.GetEnvironmentVariable("STANZA_LEGACY_LYRICS_CACHE_PATH") is { Length: > 0 } overridePath
             ? overridePath
-            : Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "Stanza", "lyrics-cache.json");
+            : Path.Combine(AppDataPaths.DataDirectory, "lyrics-cache.json");
 
     /// <summary>应用启动时初始化 SQLite 并迁移旧 JSON 缓存。</summary>
     public void Initialize()

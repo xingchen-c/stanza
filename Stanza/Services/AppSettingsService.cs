@@ -5,13 +5,9 @@ using Microsoft.Win32;
 
 namespace Stanza.Services;
 
-/// <summary>设置读写：JSON 持久化到 %APPDATA%\Stanza\settings.json，附带开机自启开关</summary>
+/// <summary>设置读写：JSON 保存在应用数据目录，附带开机自启开关。</summary>
 public static class AppSettingsService
 {
-    private static readonly string SettingsDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Stanza");
-
-    private static readonly string SettingsPath = Path.Combine(SettingsDir, "settings.json");
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
 
     /// <summary>读取设置；文件缺失或损坏时返回默认值</summary>
@@ -19,10 +15,10 @@ public static class AppSettingsService
     {
         try
         {
-            if (!File.Exists(SettingsPath))
+            if (!File.Exists(AppDataPaths.SettingsPath))
                 return new AppSettings();
 
-            var json = File.ReadAllText(SettingsPath);
+            var json = File.ReadAllText(AppDataPaths.SettingsPath);
             return JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
         }
         catch
@@ -36,12 +32,12 @@ public static class AppSettingsService
     {
         try
         {
-            Directory.CreateDirectory(SettingsDir);
+            Directory.CreateDirectory(AppDataPaths.DataDirectory);
             var json = JsonSerializer.Serialize(settings, IndentedJson);
             // 先写临时文件再替换，避免写一半崩溃留下损坏配置（与歌词缓存一致）
-            var tmp = SettingsPath + ".tmp";
+            var tmp = AppDataPaths.SettingsPath + ".tmp";
             File.WriteAllText(tmp, json);
-            File.Move(tmp, SettingsPath, true);
+            File.Move(tmp, AppDataPaths.SettingsPath, true);
         }
         catch (Exception ex)
         {

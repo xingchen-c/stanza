@@ -1,6 +1,6 @@
 # Stanza 当前架构与维护交接
 
-> 最近核对：2026-11-13。本文描述现行职责与维护约束，不保存某次机器路径、分支、HEAD 或脏工作区快照。验证结果统一见 [文档索引](./README.md#最近验证基线)。
+> 最近核对：2026-11-19。本文描述现行职责与维护约束，不保存某次机器路径、分支、HEAD 或脏工作区快照。验证结果统一见 [文档索引](./README.md#最近验证基线)。
 
 ## 1. 接手入口
 
@@ -101,13 +101,13 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 
 ## 7. 存储与日志
 
-用户数据位于 `%APPDATA%\Stanza`：`settings.json`、`stanza.db`、`logs/`。旧 FluentLyrics 目录和旧歌词 JSON 有迁移逻辑。
+用户数据由 `AppDataPaths` 统一定位：启动前设置 `STANZA_DATA_DIR`，未设置时默认 `%APPDATA%\Stanza`；内含 `settings.json`、`stanza.db`、`logs/`。Scoop 清单通过 `persist` 和 `env_set` 指向 `persist/stanza/data`。旧 JSON 只在选定目录内迁移；外部指定目录不会隐式导入 AppData，默认模式保留旧 FluentLyrics 目录迁移。
 
 - `LocalDatabase`、缓存和选择记忆是实例对象，由 `AppServices` 持有；不要新增全局静态存储。
 - `AppLog` 与 `AppSettingsService` 保持静态。日志用 `AppLog`，关键决策 Info、诊断 Debug。
 - SQLite 共用 `lyrics_cache` / `lyrics_choice`，WAL；`synchronous=NORMAL` 和 `busy_timeout=3000` 需在连接层正确应用。
 - 手选的候选专用缓存与普通曲目缓存不同，详见 [匹配文档](./MATCH-SCORING.md)。
-- 真实 `AppLog` 初始化会创建目录并清理旧日志。普通测试命令并不天然隔离用户数据；需要保护运行中用户环境时，先规划日志和数据库边界，不能直接执行后再声称无副作用。
+- 真实 `AppLog` 初始化会创建目录并清理旧日志。测试程序集现通过模块初始化器，在业务静态服务初始化前将 `STANZA_DATA_DIR` 指向独立临时目录，并清除单文件覆盖变量；测试运行真实存储和日志实现。新增独立探针仍需显式规划数据目录，不能依赖测试程序集替它隔离。
 
 ## 8. 接手与验证顺序
 
@@ -118,6 +118,6 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 5. 不自动启动 Debug 版，不关闭或操控用户正在运行的 Stanza / 播放器。需要真实界面或实网验证时先明确授权与范围。
 6. 本机更新发布固定在 `../dist/release`，不另建修复目录，不强杀进程。
 
-当前使用 .NET 10 LTS，不能套用 .NET 11 才引入的 `Environment.TickCount` 睡眠计时变化。休眠恢复仍需人工验收；本轮只调整目标框架和 SDK 选择，不改播放计时逻辑。
+当前使用 .NET 10 LTS，不能套用 .NET 11 才引入的 `Environment.TickCount` 睡眠计时变化。休眠恢复仍需人工验收；数据目录配置不改播放计时逻辑。
 
 待办与优先级只在 [ROADMAP.md](./ROADMAP.md) 维护；跨源候选决策仍是计划，不是本轮已完成功能。

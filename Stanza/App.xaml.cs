@@ -40,7 +40,7 @@ public partial class App
             return;
         }
 
-        AppLog.Info($"应用启动 v{AppVersion.Full}");
+        AppLog.Info($"应用启动 v{AppVersion.Full}，数据目录={AppDataPaths.DataDirectory}");
         Services = new AppServices();
     }
 
@@ -67,11 +67,15 @@ public partial class App
     /// </summary>
     private static void MigrateLegacyAppData()
     {
+        // 外部指定的目录独立使用，不从用户 AppData 隐式导入旧数据。
+        if (AppDataPaths.IsCustomDirectory)
+            return;
+
         try
         {
             var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             var oldDir = Path.Combine(appData, "FluentLyrics");
-            var newDir = Path.Combine(appData, "Stanza");
+            var newDir = AppDataPaths.DataDirectory;
             if (!Directory.Exists(oldDir) || Directory.Exists(newDir))
                 return;
 

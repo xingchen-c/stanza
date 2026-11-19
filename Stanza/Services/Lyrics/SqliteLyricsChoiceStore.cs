@@ -7,7 +7,7 @@ using Stanza.Services.Storage;
 namespace Stanza.Services.Lyrics;
 
 /// <summary>
-///     用户手动选择歌词的记忆：%APPDATA%\Stanza\stanza.db / lyrics_choice。
+///     用户手动选择歌词的记忆：应用数据目录 stanza.db / lyrics_choice。
 ///     key（歌名 + 歌手）→ 用户选中的候选；首次运行会迁移旧 lyrics-choice.json。
 /// </summary>
 public sealed class SqliteLyricsChoiceStore : ILyricsChoiceStore
@@ -27,9 +27,7 @@ public sealed class SqliteLyricsChoiceStore : ILyricsChoiceStore
     private static string LegacyChoicePath =>
         Environment.GetEnvironmentVariable("STANZA_LEGACY_CHOICE_PATH") is { Length: > 0 } overridePath
             ? overridePath
-            : Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "Stanza", "lyrics-choice.json");
+            : Path.Combine(AppDataPaths.DataDirectory, "lyrics-choice.json");
 
     /// <summary>应用启动时初始化 SQLite 并迁移旧 JSON 选择记忆。</summary>
     public void Initialize()

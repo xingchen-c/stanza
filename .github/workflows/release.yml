@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      DOTNET_NOLOGO: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      RELEASE_TAG: ${{ github.ref_name }}
+
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v6.1.0
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Validate release version
+        id: version
+        run: |
+          $version = (& dotnet msbuild Stanza/Stanza.csproj -nologo -getProperty:Version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw '读取项目版本失败。' }
+          if ($env:RELEASE_TAG -cne "v$version") {
+              throw "发布标签 $env:RELEASE_TAG 与项目版本 v$version 不一致。"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Build
+        run: dotnet build Stanza.slnx -c Release
+
+      - name: Test
+        run: dotnet test Stanza.slnx -c Release --no-build --no-restore
+
+      - name: Package portable ZIP and SHA256
+        run: |
+          ./scripts/Package.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'stanza-release') -ReleaseTag $env:RELEASE_TAG
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          APP_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "stanza-release/Stanza-$env:APP_VERSION-win-x64-portable.zip"
+          $releaseArguments = @(
+              'release', 'create', $env:RELEASE_TAG,
+              $zip, "$zip.sha256",
+              '--verify-tag', '--title', "Stanza $env:RELEASE_TAG", '--generate-notes'
+          )
+          if ($env:APP_VERSION.Contains('-')) { $releaseArguments += '--prerelease' }
+          & gh @releaseArguments
+          if ($LASTEXITCODE -ne 0) { throw '发布 GitHub Release 失败。' }

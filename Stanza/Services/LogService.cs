@@ -7,7 +7,7 @@ using Serilog.Events;
 namespace Stanza.Services;
 
 /// <summary>
-///     应用日志：线程安全地写入 %APPDATA%\Stanza\logs\ 下的按天滚动日志文件，
+///     应用日志：线程安全地写入应用数据目录 logs/ 下的按天滚动日志文件，
 ///     自动保留最近 7 天、单文件超过 8MB 后滚动到 .1/.2 后缀文件。
 ///     全局异常与关键事件都会经过这里落盘，用户反馈问题时直接拷日志目录即可。
 /// </summary>
@@ -76,9 +76,7 @@ public static class AppLog
     private const long MaxLogSize = 8 * 1024 * 1024;
 
     /// <summary>日志根目录（托盘"打开日志目录"也指向这里）</summary>
-    public static string LogDirectory { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "Stanza", "logs");
+    public static string LogDirectory { get; } = AppDataPaths.LogDirectory;
 
     static AppLog()
     {

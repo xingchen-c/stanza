@@ -44,7 +44,9 @@ try {
 Stanza $version — Windows 11 x64 免安装版
 
 完整解压后运行 Stanza.exe，无需另装 .NET。不要只提取 EXE 或删除随包 DLL。
-程序免安装，但设置、歌词数据库和日志仍保存在 %APPDATA%\Stanza，并与其他版本共用。
+设置、歌词数据库和日志由启动前的 STANZA_DATA_DIR 环境变量指定，默认使用 %APPDATA%\Stanza。
+Scoop 可将 STANZA_DATA_DIR 设为其 persist/stanza/data 目录；手动使用时也可指定其他目录。
+指定新目录不会自动导入旧数据；如需迁移，先退出程序再复制原数据目录的内容。
 升级前请先从托盘退出 Stanza。启用开机自启后，移动或删除目录前请先在设置中关闭自启。
 源码：https://github.com/xingchen-c/stanza （对应 v$version 标签）
 许可见 LICENSE，依赖声明见 THIRD-PARTY-NOTICES.md 和 third-party-licenses。

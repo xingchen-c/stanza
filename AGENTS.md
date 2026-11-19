@@ -27,7 +27,7 @@
 # 构建（需 .NET 10 SDK，先确认 dotnet --version）
 dotnet build Stanza.slnx -c Release
 
-# 测试（真实日志初始化会访问用户数据目录，需先确认副作用范围）
+# 测试（测试程序集会在初始化前将数据目录隔离到临时目录）
 dotnet test Stanza.slnx -c Release --no-build
 
 # 发布（框架依赖版；本机更新固定在此目录，不另建修复目录）
@@ -40,9 +40,11 @@ dotnet publish Stanza/Stanza.csproj -c Release --self-contained false -o ../dist
 ./scripts/Package.ps1 -Installer
 ```
 
-最近验证（2026-11-17，.NET 10 LTS，SDK 10.0.404）：真实仓库 Release solution 构建 0 警告、0 错误；隔离日志镜像 **192/192** 测试通过。portable ZIP、SHA256 和安装器仅在临时目录验证，未覆盖 `dist` 中的现有产物。镜像仅禁用 `LogService.cs` 的真实日志初始化，保留日志级别和调用 API；真实日志目录、清理、sink 和 Flush 不在其覆盖范围。详细边界见 `doc/README.md`。
+最近验证（2026-11-19，.NET 10 LTS，SDK 10.0.404）：真实仓库 Release solution 构建 0 警告、0 错误；真实源码 **199/199** 测试通过，测试初始化器将数据隔离到独立临时目录，未替换日志实现。发布工作流的构建、测试和打包步骤已本地演练，临时目录 ZIP 完整性、自包含运行时、SQLite、许可及 SHA256 检查通过；云端运行与 Release 上传尚未触发，安装器最近一次于 2026-11-17 验证，现有 `dist` 未覆盖。旧日志清理、滚动与退出 Flush 未做专项验收。详细边界见 `doc/README.md`。
 
 本机发布覆盖前先由用户退出 Stanza，不强杀、不自动启动 Debug 版；不要操控用户正在运行的播放器。自包含包、ZIP 和安装包不会随框架依赖发布自动更新，需单独授权与验证。`scripts/Package.ps1` 默认输出到 `../dist`，拒绝覆盖已有版本；验证时传临时 `-OutputDirectory`。发布标签必须为 `v<Version>`，可用 `-ReleaseTag` 检查名称；不自动打标签或推送。
+
+`.github/workflows/release.yml` 在 GitHub 收到 `v*` 标签时，使用 Windows runner 校验版本、构建、测试、打包并发布自包含 ZIP 与 SHA256；需要标签提交已包含工作流及待发布源码。Gitee 附件同步、Scoop 清单更新及安装包不在当前自动流程中。推送标签会触发公开发布，仍需用户明确授权。
 
 ## 4. 代码结构速查
 
@@ -51,6 +53,7 @@ Stanza/                         # 仓库根
 ├── Stanza/                     # 主项目（WPF）
 │   ├── App.xaml(.cs)           # WPF 入口 + 组合根启动 + 单实例/异常/迁移
 │   ├── AppServices.cs          # 轻量组合根：数据库、歌词缓存、选择记忆
+│   ├── AppDataPaths.cs         # 统一解析外部指定或默认的数据目录
 │   ├── MainWindow.xaml(.cs)    # 窗口本体 + 事件中枢 + 显隐/穿透/定位（仍待继续拆分）
 │   ├── MainWindow.Rendering.cs # 卡拉OK渲染、逐字、跟随滚动、翻译
 │   ├── SettingsWindow / LyricsPickerWindow   # 设置窗口 / 候选选择窗口
@@ -125,7 +128,7 @@ App.OnStartup
 4. **Win32 物理像素 vs WPF DIP**：任务栏矩形是物理像素，窗口定位是 DIP，需 `TransformFromDevice` 换算（`TaskbarService.ToDips`）。
 5. **WPF Dispatcher**：SMTC 事件回调在后台线程，必须在 `SmtcSessionService` 中通过 `Dispatcher.BeginInvoke` 回到 UI 线程，再访问播放状态和 UI 事件。
 6. **静态与实例服务边界**：`AppLog`、`AppSettingsService` 保持静态；歌词缓存、选择记忆和 `LocalDatabase` 是实例对象，由 `AppServices` 持有。不要再新增全局静态存储。
-7. **数据目录 `%APPDATA%\Stanza`**：`settings.json` / `stanza.db` / `logs/`。歌词缓存与选择记忆共用 SQLite；设置继续使用 JSON。旧目录 `%APPDATA%\FluentLyrics` 和旧歌词 JSON 均会自动迁移。
+7. **数据目录统一由 `AppDataPaths` 解析**：启动前通过 `STANZA_DATA_DIR` 指定，未设置时默认 `%APPDATA%\Stanza`；内含 `settings.json` / `stanza.db` / `logs/`。Scoop 使用 `persist/stanza/data`。旧歌词 JSON 只在选定目录内迁移；仅默认目录模式保留 `%APPDATA%\FluentLyrics` 自动迁移。不要在业务服务中另写固定用户路径。
 8. **歌词自动匹配尚未统一**：当前自动链路是提供器串行回退，同名同歌手多版本问题未解决。禁止用多个 `LoadAsync` 并行抢答替代候选排序；目标设计见 `doc/MATCH-SCORING.md` §11。
 9. **请求身份各有职责**：媒体请求的会话 epoch / 序号、曲目 revision、歌词 generation 不能互相替代。选词贯穿使用 `LyricsSelectionContext`，手选成功后不能被同曲自动晚到覆盖；关键回归约束见 `doc/HANDOVER.md`。
 10. **候选展示与搜索召回分开**：列表始终过滤异歌，勾选只放宽歌手；搜索阶段可宽召回，不能把任意括号副标题都当作可忽略版本。不要把歌手分档降级改回整源一票否决。

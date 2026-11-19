@@ -18,9 +18,7 @@ internal sealed class LocalDatabase
         DatabasePath = databasePath ??
             (Environment.GetEnvironmentVariable("STANZA_DATABASE_PATH") is { Length: > 0 } overridePath
                 ? overridePath
-                : Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    "Stanza", "stanza.db"));
+                : AppDataPaths.DatabasePath);
     }
 
     /// <summary>当前数据库文件路径。</summary>
