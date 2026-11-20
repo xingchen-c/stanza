@@ -15,7 +15,7 @@ internal static class TaskbarEnumerator
         PixelRect Rect,
         bool IsPrimary);
 
-    public static IReadOnlyList<TaskbarWindow> Enumerate()
+    public static IReadOnlyList<TaskbarWindow> Enumerate(IntPtr preferredHandle)
     {
         var handles = new List<IntPtr>();
         NativeMethods.EnumWindows((h, _) =>
@@ -27,8 +27,7 @@ internal static class TaskbarEnumerator
         }, IntPtr.Zero);
 
         var result = new List<TaskbarWindow>();
-        foreach (var hwnd in handles
-                     .OrderBy(h => GetClass(h) == PrimaryTaskbarClass ? 0 : 1))
+        foreach (var hwnd in handles)
         {
             if (!NativeMethods.GetWindowRect(hwnd, out var rect) ||
                 rect.Width <= 0 ||
@@ -41,8 +40,17 @@ internal static class TaskbarEnumerator
                 GetClass(hwnd) == PrimaryTaskbarClass));
         }
 
-        return result;
+        return OrderForSelection(result, preferredHandle);
     }
+
+    internal static IReadOnlyList<TaskbarWindow> OrderForSelection(
+        IReadOnlyList<TaskbarWindow> taskbars, IntPtr preferredHandle)
+        => taskbars.OrderByDescending(t => t.Handle == preferredHandle)
+            .ThenByDescending(t => t.IsPrimary)
+            .ThenBy(t => t.Rect.Left)
+            .ThenBy(t => t.Rect.Top)
+            .ThenBy(t => t.Handle.ToInt64())
+            .ToArray();
 
     public static string GetClass(IntPtr hwnd)
     {

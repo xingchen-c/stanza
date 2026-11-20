@@ -166,22 +166,25 @@ public sealed class TaskbarService : IDisposable
             string placement;
             bool hasCardRegion;
             bool wasAnchorBased;
+            IntPtr currentTaskbar;
             lock (_sync)
             {
                 enabledKeys = _enabledKeys;
                 placement = _placementDirection;
                 hasCardRegion = _hasCardRegion;
                 wasAnchorBased = _wasAnchorBased;
+                currentTaskbar = _taskbarHwnd;
             }
 
-            // 多显示器：枚举所有任务栏，优先选"探到锚点组件"的那条；找不到时用第一条（主任务栏）兜底
+            // 锚点优先；无锚点时沿用仍存在的任务栏，首次定位或原屏移除后优先主任务栏。
             var chosen = IntPtr.Zero;
             PixelRect chosenRect = default;
             var chosenPrimary = true;
             PixelRect? widget = null;
             PixelRect? start = null;
 
-            foreach (var taskbar in TaskbarEnumerator.Enumerate())
+            var taskbars = TaskbarEnumerator.Enumerate(currentTaskbar);
+            foreach (var taskbar in taskbars)
             {
                 var hwnd = taskbar.Handle;
                 var tray = taskbar.Rect;
@@ -226,7 +229,8 @@ public sealed class TaskbarService : IDisposable
             lock (_sync)
             {
                 // 锚点组件暂隐（暂停/切歌过渡）时保留上次选中的任务栏与卡片区域，避免卡片跳到别处
-                if (widget is null && hasCardRegion && wasAnchorBased)
+                if (widget is null && hasCardRegion && wasAnchorBased &&
+                    taskbars.Any(t => t.Handle == currentTaskbar))
                 {
                     _isWidgetPresent = false;
                 }
