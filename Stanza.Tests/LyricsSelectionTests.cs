@@ -115,6 +115,65 @@ public class LyricsSelectionTests
         Assert.Equal("可用词", coordinator.Lyrics.Lines.Single().Text);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task 手选失败或取消后恢复自动取词(bool cancel, bool automaticFinishesFirst)
+    {
+        var store = new Cache();
+        var choices = new InMemoryLyricsChoiceStore();
+        var provider = new Provider();
+        var coordinator = new LyricsCoordinator(store, choices, () => Query.Key, provider);
+        var applied = new List<LyricsLoadResult>();
+        coordinator.ResultApplied += (_, result) => applied.Add(result);
+        var automatic = coordinator.LoadAsync(Query);
+        await provider.AutoStarted.Task;
+        using var cts = new CancellationTokenSource();
+        var manual = coordinator.ApplyCandidateAsync(Query.Key, Candidate, cts.Token);
+
+        if (automaticFinishesFirst)
+        {
+            provider.Auto.SetResult(Result("正常自动歌词"));
+            await automatic;
+        }
+
+        if (cancel)
+            cts.Cancel();
+        provider.Manual.SetResult(new(LyricsLoadResult.NotFound, []));
+        Assert.False(await manual);
+        if (!automaticFinishesFirst)
+        {
+            provider.Auto.SetResult(Result("正常自动歌词"));
+            await automatic;
+        }
+
+        await coordinator.RecoveryCompletion.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal("正常自动歌词", coordinator.Lyrics.Lines.Single().Text);
+        Assert.Equal("正常自动歌词", store.Items[Query.Key].Lines.Single().Text);
+        Assert.False(choices.TryGet(Query.Key, out _));
+        Assert.Equal([LyricsLoadResult.Loaded], applied);
+    }
+
+    [Fact]
+    public async Task 切歌后的旧手选失败不恢复旧歌自动加载()
+    {
+        var key = Query.Key;
+        var provider = new Provider();
+        var coordinator = new LyricsCoordinator(new Cache(), new InMemoryLyricsChoiceStore(), () => key, provider);
+        var automatic = coordinator.LoadAsync(Query);
+        var manual = coordinator.ApplyCandidateAsync(Query.Key, Candidate);
+        key = "下一首";
+        coordinator.Lyrics.InvalidateInFlight();
+        provider.Manual.SetResult(new(LyricsLoadResult.NotFound, []));
+        Assert.False(await manual);
+        provider.Auto.SetResult(Result("旧歌词"));
+        await automatic;
+        await coordinator.RecoveryCompletion.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Empty(coordinator.Lyrics.Lines);
+    }
+
     [Fact]
     public async Task 恢复探测挂起时手选成功不得再发布自动未找到()
     {

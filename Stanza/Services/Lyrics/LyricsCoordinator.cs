@@ -16,6 +16,7 @@ internal sealed class LyricsCoordinator
     private readonly int _recoveryLifetimeMs;
     private readonly int _idlePollIntervalMs;
     private CancellationTokenSource? _recoveryCts;
+    private LyricsQuery? _lastQuery;
 
     public LyricsCoordinator(
         ILyricsCacheStore cacheStore,
@@ -57,7 +58,10 @@ internal sealed class LyricsCoordinator
     public event Action<string>? StatusChanged;
 
     public Task<LyricsLoadResult> LoadAsync(LyricsQuery query)
-        => LoadAsync(query, Lyrics.Generation);
+    {
+        _lastQuery = query;
+        return LoadAsync(query, Lyrics.Generation);
+    }
 
     private async Task<LyricsLoadResult> LoadAsync(
         LyricsQuery query, int generation, CancellationToken cancellationToken = default)
@@ -112,6 +116,7 @@ internal sealed class LyricsCoordinator
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            ResumeAutomaticLoading(key, generation);
             return false;
         }
 
@@ -126,6 +131,7 @@ internal sealed class LyricsCoordinator
         {
             AppLog.Warn($"候选无歌词: '{candidate.Title}'（来源={candidate.SourceName}）");
             StatusChanged?.Invoke("所选歌词版本没有歌词，请换一个试试");
+            ResumeAutomaticLoading(key, generation);
             return false;
         }
 
@@ -143,12 +149,23 @@ internal sealed class LyricsCoordinator
         return true;
     }
 
+    private void ResumeAutomaticLoading(string key, int generation)
+    {
+        if (!IsCurrent(key, generation, CancellationToken.None) || Lyrics.Lines.Count > 0 ||
+            _lastQuery is not { } query || query.Key != key)
+            return;
+
+        // 手选已作废原自动请求；失败或关闭选择器后，用当前世代重新加载。
+        ScheduleRecovery(key, query, _ => Task.FromResult(RecoveryProbe.Ready(query)));
+    }
+
     public void ScheduleRecovery(
         string key,
         LyricsQuery fallbackQuery,
         Func<CancellationToken, Task<RecoveryProbe>> readCurrentQuery)
     {
         CancelRecovery();
+        _lastQuery = fallbackQuery;
         var cts = new CancellationTokenSource();
         _recoveryCts = cts;
         RecoveryCompletion = RunRecoveryAsync(key, fallbackQuery, readCurrentQuery, Lyrics.Generation, cts);
