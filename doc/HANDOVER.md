@@ -66,7 +66,7 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 
 `LyricsSelectionContext(LyricsQuery Query, long Revision)` 贯穿候选搜索与应用。搜索开始、返回和应用阶段均需检查上下文，不能在应用时临时读取当前曲目并把旧候选绑定过去。
 
-手选先取消恢复并开启新 generation。同曲自动请求即使晚到，也不能覆盖手选歌词或缓存；正常切歌后的旧自动请求仍可缓存自己的曲目，但不能回写当前显示。缓存异步写入顺序亦有约束，不能只保护 `_lines` 而漏掉持久化副作用。
+手选先取消恢复并开启新 generation。同曲自动请求即使晚到，也不能覆盖手选歌词或缓存；失败或取消且当前无歌词时，使用最近的同曲查询恢复自动加载，仍受曲目 key 和 generation 约束。正常切歌后的旧自动请求仍可缓存自己的曲目，但不能回写当前显示。缓存异步写入顺序亦有约束，不能只保护 `_lines` 而漏掉持久化副作用。
 
 选择窗口立即显示加载态、单实例打开；关闭取消等待，失败可重试，成功才关闭。窗口已设 `Topmost` 和主窗口 `Owner`。
 
@@ -79,15 +79,17 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 | 匹配 | 歌手优先分档；没有匹配歌手时允许降级，不能整源放弃 | `QqMusicMatchingTests`、`QqCandidateSelectionTests` |
 | 手选过滤 | 异歌始终过滤；勾选只放宽同名版本的歌手；搜索清洗不等于同曲判定 | `MediaInteractionTests`、`QqCandidateSelectionTests` |
 | 请求身份 | 旧会话、旧元数据回包不能改变当前曲目；不能只靠歌词 generation | `MediaRequestTests` |
-| 歌词并发 | 手选优先；迟到请求不得修改新歌显示、状态或选择记忆 | `LyricsGenerationTests`、`LyricsSelectionTests` |
+| 歌词并发 | 手选优先；失败或取消后可恢复同曲自动加载；迟到请求不得修改新歌显示、状态或选择记忆 | `LyricsGenerationTests`、`LyricsSelectionTests` |
 | 缓存 | 记忆候选先查专用缓存；不能把旧普通缓存当成该候选的歌词 | `LyricsSelectionTests`、`SqliteStorageTests` |
 | 纯音乐 | 解析失败不等于纯音乐；误选纯音乐不持久记忆，避免阻断后续匹配 | `QqMusicMatchingTests`、`LyricsSelectionTests` |
 | 位置 | SMTC Position 是 LastUpdatedTime 时刻的快照；位置回退不等于切歌 | `PlaybackSourceTests` |
 | 恢复边界 | 恢复不应清掉仍有效的切歌闸门；新歌未确认时不能错误重置墙钟位置 | `PlaybackSourceTests` |
+| 切歌计时 | TickCount 的负数、零值与回绕都必须正常计算耗时及最近切歌窗口 | `TrackSwitchStateMachineTests` |
 | NotFound | `Ready` / `Retry` / `Abort` 分开；暂停可等待，取消不回写，终止须清理加载占位 | `LyricsRecoveryTests` |
 | 超时 | 单源超时应继续后续源；候选查询有总预算，保留已取得结果 | `LyricsProviderChainTests` |
 | 设置 | 保存、预览和取消不能静默重置日志级别或丢失其他字段 | `SettingsViewModelTests` |
 | 全屏 | 覆盖整块目标显示器才隐藏；系统外壳不算全屏，另一显示器全屏不影响当前卡片 | `FullscreenDetectionTests` |
+| 任务栏 | 优先沿用当前任务栏；原任务栏移除后按主任务栏和稳定顺序重新选择 | `TaskbarSelectionTests` |
 
 改行为时先添加能失败的回归用例；不能为了让重构通过而反转原本锁定正确行为的断言。第二实例退出与真实 WinRT 事件退订等入口行为还需人工检查，不能从纯逻辑测试推导其已验收。
 
@@ -96,9 +98,11 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 - 点击穿透由 `WindowInteropService` 按调整模式、穿透设置和光标是否位于媒体区域，动态切换 `WS_EX_TRANSPARENT`，保留 `WS_EX_NOACTIVATE`；不能用仅同线程转发的 `HTTRANSPARENT` 替代跨进程穿透。
 - 播放能力优先读取运行时 `PlaybackInfo.Controls`，读取失败才回退到策略能力。当前尚未实现主动 seek。
 - 任务栏矩形使用物理像素，定位 WPF 窗口时才换为 DIP，避免重复缩放。
+- 无锚点时沿用已定位的任务栏，避免枚举顺序变化导致跨屏跳位；原任务栏消失后才重新选择。保存的歌词字号与颜色在启动和设置应用时共用同一入口。
 - 全屏检测用选中任务栏定位显示器，再比较前台窗口的 DWM 可见边界；读取失败回退 `GetWindowRect`。开始菜单、搜索和 Shell 宿主被排除，Explorer 文件窗口 F11 全屏保留。
 - 显示入口统一遵守手动隐藏、全屏与播放状态；退出全屏时，调整位置模式也应恢复可见，不重新移动用户正在拖动的位置。真实窗口显隐仍需人工验收。
 - 封面适配器决定读取和替换策略，`PlaybackCoverPipeline` 负责过期结果、去重、解码与发布。QQ / Generic 接受首张稳定图，网易云允许有限窗口内替换迟到图。
+- 会话选择按实际 SMTC 对象去重，不能用 AUMID 与枚举下标判断对象是否替换；封面重读在异步返回后再次核对重试世代、会话和释放状态。
 - 封面保留 GDI+ 容错解码，转 WPF 图像后冻结；不要轻易退回直接 `BitmapImage` 读取，历史上遇过 JPEG / ICC 失败。
 - 软件渲染三项降级见 [兼容文档](./SOFTWARE-RENDER-FALLBACK.md)，不要改成移除透明分层窗口。
 
