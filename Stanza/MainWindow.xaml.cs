@@ -141,14 +141,14 @@ public partial class MainWindow
         MouseLeftButtonUp += OnAdjustMouseUp;
         MouseRightButtonDown += OnAdjustMouseRightDown;
 
-        // 兜底：2 秒后无论如何显示，避免定位失败时窗口一直隐藏
+        // 兜底：2 秒后重试定位，任务栏仍未就绪时按显隐条件显示。
         var safetyTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(2000) };
         safetyTimer.Tick += (_, _) =>
         {
             safetyTimer.Stop();
             PositionCard(); // 重新定位一次：定位成功自己显示，组件隐藏则保持隐藏
             if (Visibility != Visibility.Visible && !_taskbar.HasTaskbar && !_userHidden)
-                Visibility = Visibility.Visible; // 任务栏还没就绪才兜底显示
+                ShowCardIfReady(); // 任务栏还没就绪才兜底显示，仍遵守全屏和播放状态
         };
 
         safetyTimer.Start();
@@ -523,38 +523,34 @@ public partial class MainWindow
     {
         var fullscreen = _fullscreenDetector.IsForegroundFullscreen(
             _taskbar.GetTaskbarRectPixels());
-        // 全屏期间若用户手动显示卡片（托盘"显示/隐藏"），下一拍强制再隐藏
+        // WPF 启动时可能调用 Show，全屏期间仍需纠正窗口显隐。
         if (fullscreen == _hiddenForFullscreen && (!fullscreen || Visibility == Visibility.Collapsed))
             return;
 
+        if (fullscreen != _hiddenForFullscreen)
+            AppLog.Info($"全屏隐藏: {(fullscreen ? "进入" : "退出")}");
         _hiddenForFullscreen = fullscreen;
         PositionCard();
     }
 
     private void PositionCard()
     {
+        if (_userHidden || _hiddenForFullscreen || ShouldHideForPlayback())
+        {
+            if (Visibility != Visibility.Collapsed)
+                Visibility = Visibility.Collapsed;
+            return;
+        }
+
         if (!_taskbar.HasTaskbar)
             return;
 
-        // 全屏应用（游戏/全屏视频）时隐藏，避免置顶窗口盖在全屏内容上
-        if (_hiddenForFullscreen)
-        {
-            if (Visibility != Visibility.Collapsed)
-                Visibility = Visibility.Collapsed;
-            return;
-        }
-
-        // 暂停/停止/会话关闭时隐藏卡片（观感与 FluentFlyout 暂停消失一致）
-        if (ShouldHideForPlayback())
-        {
-            if (Visibility != Visibility.Collapsed)
-                Visibility = Visibility.Collapsed;
-            return;
-        }
-
         // 调整模式下位置由用户拖动控制，不自动定位（退出时再恢复锚点+偏移）
         if (_adjustingPosition)
+        {
+            ShowCardIfReady();
             return;
+        }
 
         var taskbarRect = _taskbar.GetTaskbarRectDips(this);
         if (_taskbar.GetCardRegionDips(this) is not { } card)
@@ -613,7 +609,7 @@ public partial class MainWindow
         };
     }
 
-    /// <summary>托盘菜单：切换卡片显隐（暂停播放时仍保持隐藏，与播放状态逻辑一致）</summary>
+    /// <summary>托盘菜单：切换卡片显隐，显示时仍遵守全屏与播放状态。</summary>
     private void ToggleCardVisibility()
     {
         if (Visibility == Visibility.Visible)
@@ -625,7 +621,7 @@ public partial class MainWindow
         {
             _userHidden = false;
             PositionCard();
-            Visibility = Visibility.Visible;
+            ShowCardIfReady();
         }
     }
 
@@ -685,7 +681,7 @@ public partial class MainWindow
         if (Visibility != Visibility.Visible)
         {
             _userHidden = false;
-            Visibility = Visibility.Visible;
+            ShowCardIfReady();
         }
 
         _adjustingPosition = true;
@@ -875,10 +871,10 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>定位成功后再显示，避免启动瞬间以默认位置盖住组件</summary>
+    /// <summary>显示入口统一遵守手动隐藏、全屏与播放条件。</summary>
     private void ShowCardIfReady()
     {
-        if (_userHidden)
+        if (_userHidden || _hiddenForFullscreen || ShouldHideForPlayback())
             return;
         if (Visibility != Visibility.Visible)
             Visibility = Visibility.Visible;

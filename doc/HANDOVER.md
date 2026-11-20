@@ -1,6 +1,6 @@
 # Stanza 当前架构与维护交接
 
-> 最近核对：2026-11-19。本文描述现行职责与维护约束，不保存某次机器路径、分支、HEAD 或脏工作区快照。验证结果统一见 [文档索引](./README.md#最近验证基线)。
+> 最近核对：2026-11-20。本文描述现行职责与维护约束，不保存某次机器路径、分支、HEAD 或脏工作区快照。验证结果统一见 [文档索引](./README.md#最近验证基线)。
 
 ## 1. 接手入口
 
@@ -87,6 +87,7 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 | NotFound | `Ready` / `Retry` / `Abort` 分开；暂停可等待，取消不回写，终止须清理加载占位 | `LyricsRecoveryTests` |
 | 超时 | 单源超时应继续后续源；候选查询有总预算，保留已取得结果 | `LyricsProviderChainTests` |
 | 设置 | 保存、预览和取消不能静默重置日志级别或丢失其他字段 | `SettingsViewModelTests` |
+| 全屏 | 覆盖整块目标显示器才隐藏；系统外壳不算全屏，另一显示器全屏不影响当前卡片 | `FullscreenDetectionTests` |
 
 改行为时先添加能失败的回归用例；不能为了让重构通过而反转原本锁定正确行为的断言。第二实例退出与真实 WinRT 事件退订等入口行为还需人工检查，不能从纯逻辑测试推导其已验收。
 
@@ -95,6 +96,8 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 - 点击穿透由 `WindowInteropService` 按调整模式、穿透设置和光标是否位于媒体区域，动态切换 `WS_EX_TRANSPARENT`，保留 `WS_EX_NOACTIVATE`；不能用仅同线程转发的 `HTTRANSPARENT` 替代跨进程穿透。
 - 播放能力优先读取运行时 `PlaybackInfo.Controls`，读取失败才回退到策略能力。当前尚未实现主动 seek。
 - 任务栏矩形使用物理像素，定位 WPF 窗口时才换为 DIP，避免重复缩放。
+- 全屏检测用选中任务栏定位显示器，再比较前台窗口的 DWM 可见边界；读取失败回退 `GetWindowRect`。开始菜单、搜索和 Shell 宿主被排除，Explorer 文件窗口 F11 全屏保留。
+- 显示入口统一遵守手动隐藏、全屏与播放状态；退出全屏时，调整位置模式也应恢复可见，不重新移动用户正在拖动的位置。真实窗口显隐仍需人工验收。
 - 封面适配器决定读取和替换策略，`PlaybackCoverPipeline` 负责过期结果、去重、解码与发布。QQ / Generic 接受首张稳定图，网易云允许有限窗口内替换迟到图。
 - 封面保留 GDI+ 容错解码，转 WPF 图像后冻结；不要轻易退回直接 `BitmapImage` 读取，历史上遇过 JPEG / ICC 失败。
 - 软件渲染三项降级见 [兼容文档](./SOFTWARE-RENDER-FALLBACK.md)，不要改成移除透明分层窗口。

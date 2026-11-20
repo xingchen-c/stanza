@@ -316,7 +316,7 @@ public sealed class TaskbarService : IDisposable
         return ToDips(window, rect);
     }
 
-    /// <summary>当前选中任务栏的物理像素矩形；没有有效任务栏返回 null（全屏检测判断"任务栏是否被盖住"用）</summary>
+    /// <summary>当前选中任务栏的物理像素矩形；没有有效任务栏返回 null（全屏检测定位目标显示器用）</summary>
     public PixelRect? GetTaskbarRectPixels()
     {
         lock (_sync)

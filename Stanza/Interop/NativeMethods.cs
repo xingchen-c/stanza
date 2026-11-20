@@ -27,6 +27,15 @@ internal static class NativeMethods
         public int Y;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct NativeMonitorInfo
+    {
+        public int Size;
+        public NativeRect Monitor;
+        public NativeRect WorkArea;
+        public uint Flags;
+    }
+
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtr")]
     public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
 
@@ -62,6 +71,13 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetWindowRect(IntPtr hWnd, out NativeRect lpRect);
 
+    [DllImport("user32.dll")]
+    public static extern IntPtr MonitorFromRect(ref NativeRect rect, uint flags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetMonitorInfo(IntPtr monitor, ref NativeMonitorInfo info);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int GetClassName(IntPtr hWnd, StringBuilder className, int maxCount);
 
@@ -95,6 +111,13 @@ internal static class NativeMethods
 
     [DllImport("gdi32.dll")]
     public static extern int GetRgnBox(IntPtr hRgn, out NativeRect rect);
+
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmGetWindowAttribute(
+        IntPtr hwnd,
+        int attribute,
+        out NativeRect value,
+        int size);
 
     [DllImport("dwmapi.dll")]
     public static extern int DwmSetWindowAttribute(
