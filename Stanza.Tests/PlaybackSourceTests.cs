@@ -205,6 +205,37 @@ public class PlaybackSourcePolicyTests
 
 public class TrackSwitchStateMachineTests
 {
+    [Theory]
+    [InlineData(-1000000, -991000)]
+    [InlineData(-1, 8999)]
+    [InlineData(0, 9000)]
+    [InlineData(2147480000, -2147478296)]
+    public void 切歌计时支持负数零值和溢出(int startTick, int nowTick)
+    {
+        var fsm = new TrackSwitchStateMachine();
+        Assert.Equal(0, fsm.ElapsedMs(nowTick));
+        fsm.Begin("当前歌曲", startTick);
+        Assert.Equal(9000, fsm.ElapsedMs(nowTick));
+        fsm.Reset();
+        Assert.Equal(0, fsm.ElapsedMs(nowTick));
+    }
+
+    [Theory]
+    [InlineData(-1000000, -999000)]
+    [InlineData(-1, 999)]
+    [InlineData(0, 1000)]
+    [InlineData(2147483000, -2147483296)]
+    public void 最近切歌窗口支持负数零值和溢出(int completedTick, int nowTick)
+    {
+        var fsm = new TrackSwitchStateMachine();
+        Assert.False(fsm.RecentlyCompleted(nowTick, 2000));
+        fsm.Complete(completedTick);
+        Assert.True(fsm.RecentlyCompleted(nowTick, 2000));
+        Assert.False(fsm.RecentlyCompleted(unchecked(nowTick + 1000), 2000));
+        fsm.Reset();
+        Assert.False(fsm.RecentlyCompleted(nowTick, 2000));
+    }
+
     [Fact]
     public void Suspicion_can_be_confirmed_or_cleared()
     {

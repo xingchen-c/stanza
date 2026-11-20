@@ -20,8 +20,8 @@ internal sealed class TrackSwitchStateMachine
 {
     public TrackSwitchState State { get; private set; } = TrackSwitchState.Idle;
     public string SwitchKey { get; private set; } = string.Empty;
-    private int _startedAt = -1;
-    private int _lastCompletedAt = -1;
+    private int? _startedAt;
+    private int? _lastCompletedAt;
 
     public bool IsSwitching => State is TrackSwitchState.Switching or TrackSwitchState.Loading;
     public bool IsSuspected => State == TrackSwitchState.Suspected;
@@ -67,13 +67,13 @@ internal sealed class TrackSwitchStateMachine
     {
         State = TrackSwitchState.Idle;
         SwitchKey = string.Empty;
-        _startedAt = -1;
-        _lastCompletedAt = -1;
+        _startedAt = null;
+        _lastCompletedAt = null;
     }
 
     public int ElapsedMs(int nowTick)
-        => _startedAt >= 0 ? nowTick - _startedAt : 0;
+        => _startedAt is { } startedAt ? unchecked(nowTick - startedAt) : 0;
 
     public bool RecentlyCompleted(int nowTick, int windowMs)
-        => _lastCompletedAt > 0 && nowTick - _lastCompletedAt < windowMs;
+        => _lastCompletedAt is { } completedAt && unchecked((uint)(nowTick - completedAt)) < (uint)windowMs;
 }
