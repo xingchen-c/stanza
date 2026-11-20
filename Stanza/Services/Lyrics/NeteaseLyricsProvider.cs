@@ -5,12 +5,9 @@ using Stanza.Models;
 
 namespace Stanza.Services.Lyrics;
 
-/// <summary>网易云音乐歌词源（兜底）：搜索 → 取 Yrc/Lrc → 解析成带时间轴的行（Yrc 含逐字）</summary>
+/// <summary>网易云音乐歌词源：搜索候选，按 ID 取 Yrc/Lrc 并解析时间轴（Yrc 含逐字）。</summary>
 public sealed class NeteaseLyricsProvider : ILyricsProvider
 {
-    /// <summary>自动匹配最多尝试的候选数（兜底源，别太贪，避免拖慢整条加载链）</summary>
-    private const int MaxAutoAttempts = 3;
-
     /// <inheritdoc />
     public string Key => "NetEase";
 
@@ -18,73 +15,7 @@ public sealed class NeteaseLyricsProvider : ILyricsProvider
     public string Name => "网易云音乐";
 
     /// <inheritdoc />
-    public async Task<LyricsResult> LoadAsync(LyricsQuery query)
-    {
-        var title = query.Title;
-        var artist = query.Artist;
-        var durationMs = query.DurationMs;
-        if (string.IsNullOrWhiteSpace(title))
-            return new LyricsResult(LyricsLoadResult.NotFound, []);
-
-        try
-        {
-            var results = await SearchAsync(title, artist, durationMs);
-            if (results.Count == 0)
-                return new LyricsResult(LyricsLoadResult.NotFound, []);
-
-            // 复用 QQ 那套「歌名硬门槛 + 歌手精确优先 + 综合打分」，保证各源匹配策略一致
-            var scored = results
-                .Where(r => QqMusicLyricsProvider.TitlesRelated(r.Title ?? title, title))
-                .Select((r, index) => (Candidate: r, Index: index, Score: QqMusicLyricsProvider.ComputeMatchScore(
-                    r.Title, r.Artists, r.Album, r.DurationMs, r.MatchType,
-                    title, artist, durationMs),
-                    ArtistRank: QqMusicLyricsProvider.ArtistRankKey(r.Artists, artist)))
-                .OrderByDescending(x => x.ArtistRank)
-                .ThenByDescending(x => x.Score)
-                .ThenBy(x => x.Index)
-                .ToList();
-
-            var hasExpectedArtist = !string.IsNullOrWhiteSpace(artist);
-            var selection = QqMusicLyricsProvider.SelectByArtistTier(
-                scored,
-                x => x.ArtistRank,
-                hasExpectedArtist);
-            var ranked = selection.Ranked;
-            if (selection.UsedFallback && scored.Count > 0)
-            {
-                AppLog.Info(
-                    $"网易云无歌手匹配候选，降级为歌名匹配（可能跨歌手）: '{title}' / '{artist}'，" +
-                    $"歌名相关候选={scored.Count}");
-            }
-
-            var sawInstrumental = false;
-            var attempts = 0;
-            foreach (var item in ranked)
-            {
-                if (++attempts > MaxAutoAttempts)
-                    break;
-
-                var result = await LoadByIdAsync(item.Candidate.Id, item.Candidate.Title ?? title);
-                if (result.Status == LyricsLoadResult.Loaded)
-                {
-                    AppLog.Info($"网易云命中: '{item.Candidate.Title}' / {string.Join(", ", item.Candidate.Artists)} / 分={item.Score:F2}");
-                    return result;
-                }
-
-                if (result.Status == LyricsLoadResult.Instrumental)
-                    sawInstrumental = true;
-            }
-
-            return new LyricsResult(
-                sawInstrumental ? LyricsLoadResult.Instrumental : LyricsLoadResult.NotFound,
-                []);
-        }
-        catch (Exception ex)
-        {
-            AppLog.Error($"网易云搜索/取词失败: {ex.Message}");
-            return new LyricsResult(LyricsLoadResult.NotFound, []);
-        }
-    }
+    public Task<LyricsResult> LoadAsync(LyricsQuery query) => new LyricsProviderChain(this).LoadAsync(query);
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(LyricsQuery query)
@@ -95,38 +26,9 @@ public sealed class NeteaseLyricsProvider : ILyricsProvider
         try
         {
             var results = await SearchAsync(title, artist, durationMs);
-            var hasExpectedArtist = !string.IsNullOrWhiteSpace(artist);
-            // 手动选择是自动匹配失败后的唯一纠正通道，绝不能套用和自动链相同的硬门槛。
-            // 只排序、不过滤，由用户根据 ArtistMatched / MatchScore 判断。
-            return results
-                .Select((r, index) => new
-                {
-                    Candidate = new LyricCandidate(
-                        Key,
-                        Name,
-                        r.Id,
-                        r.Title ?? title,
-                        r.Artists is { Length: > 0 } ? string.Join(", ", r.Artists) : artist,
-                        r.Album,
-                        r.DurationMs,
-                        r.MatchType?.ToString())
-                    {
-                        MatchScore = QqMusicLyricsProvider.ComputeMatchScore(
-                            r.Title, r.Artists, r.Album, r.DurationMs, r.MatchType,
-                            title, artist, durationMs),
-                        ArtistMatched = hasExpectedArtist
-                            ? QqMusicLyricsProvider.ArtistRankKey(r.Artists, artist) >=
-                              QqMusicLyricsProvider.ArtistMatchThreshold
-                            : null
-                    },
-                    Index = index,
-                    ArtistRank = QqMusicLyricsProvider.ArtistRankKey(r.Artists, artist)
-                })
-                .OrderByDescending(x => x.ArtistRank)
-                .ThenByDescending(x => x.Candidate.MatchScore)
-                .ThenBy(x => x.Index)
-                .Select(x => x.Candidate)
-                .ToList();
+            return results.Select(r => new LyricCandidate(
+                Key, Name, r.Id, r.Title ?? string.Empty, string.Join(", ", r.Artists ?? []),
+                r.Album, r.DurationMs, r.MatchType?.ToString())).ToArray();
         }
         catch (Exception ex)
         {
@@ -135,7 +37,7 @@ public sealed class NeteaseLyricsProvider : ILyricsProvider
         }
     }
 
-    /// <summary>按用户选中的候选直接取歌词（跳过搜索匹配）</summary>
+    /// <summary>按已选候选直接取歌词（自动与手动共用）</summary>
     public Task<LyricsResult> LoadCandidateAsync(LyricCandidate candidate)
     {
         return LoadByIdAsync(candidate.Id, candidate.Title);

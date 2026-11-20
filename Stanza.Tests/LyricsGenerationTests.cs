@@ -64,8 +64,8 @@ public class LyricsGenerationTests
             [new LyricLine(0, "旧歌第一行")]));
         await oldLoad;
 
-        Assert.Contains(oldQuery.Key, store.WrittenKeys);
-        Assert.True(store.TryGet(oldQuery.Key, out var status, out var lines));
+        Assert.Contains(LyricsService.AutomaticCacheKey(oldQuery), store.WrittenKeys);
+        Assert.True(store.TryGet(LyricsService.AutomaticCacheKey(oldQuery), out var status, out var lines));
         Assert.Equal(LyricsLoadResult.Loaded, status);
         Assert.Equal("旧歌第一行", lines.Single().Text);
     }
@@ -114,7 +114,7 @@ public class LyricsGenerationTests
         var service = new LyricsService(store, provider);
         var oldQuery = new LyricsQuery("旧歌", "甲", null);
         store.Put(
-            oldQuery.Key,
+            LyricsService.AutomaticCacheKey(oldQuery),
             LyricsLoadResult.Loaded,
             [new LyricLine(0, "旧歌缓存行")]);
         var staleGeneration = service.Generation;

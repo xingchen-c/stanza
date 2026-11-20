@@ -39,9 +39,16 @@ public sealed class SqliteLyricsCacheStore : ILyricsCacheStore
     /// <summary>按 key 取缓存；数据库无记录或解析失败时返回 false。</summary>
     public bool TryGet(string key, out LyricsLoadResult status, out List<LyricLine> lines)
     {
-        status = LyricsLoadResult.NotFound;
-        lines = [];
+        var hit = Read(key);
+        status = hit?.Status ?? LyricsLoadResult.NotFound;
+        lines = hit?.Lines ?? [];
+        return hit is not null;
+    }
 
+    Task<LyricsCacheHit?> ILyricsCacheStore.GetAsync(string key) => Task.Run(() => Read(key));
+
+    private LyricsCacheHit? Read(string key)
+    {
         lock (_gate)
         {
             try
@@ -49,42 +56,42 @@ public sealed class SqliteLyricsCacheStore : ILyricsCacheStore
                 EnsureLegacyMigrated();
                 using var connection = _database.Open();
                 using var command = connection.CreateCommand();
-                command.CommandText = """
-                    SELECT status, payload
-                    FROM lyrics_cache
-                    WHERE key = $key;
-                    """;
+                command.CommandText = "SELECT status, payload FROM lyrics_cache WHERE key = $key;";
                 command.Parameters.AddWithValue("$key", key);
-
                 using var reader = command.ExecuteReader();
                 if (!reader.Read())
-                    return false;
-
-                status = (LyricsLoadResult)reader.GetInt32(0);
+                    return null;
+                var status = (LyricsLoadResult)reader.GetInt32(0);
                 var payload = reader.GetString(1);
-                var dto = JsonSerializer.Deserialize<List<CachedLyricLine>>(payload);
-                if (dto is null || dto.Count == 0)
-                    return false;
-
+                // 兼容已有候选缓存；没有决策证据的旧普通缓存不会被新自动 key 命中。
+                var cached = payload.TrimStart().StartsWith('[')
+                    ? new CachedLyrics { Lines = JsonSerializer.Deserialize<List<CachedLyricLine>>(payload) ?? [] }
+                    : JsonSerializer.Deserialize<CachedLyrics>(payload);
+                if (cached is null || cached.Lines.Count == 0 && status != LyricsLoadResult.Instrumental)
+                    return null;
                 reader.Close();
                 Touch(connection, key);
-                lines = dto.Select(FromDto).ToList();
-                return true;
+                return new(status, cached.Lines.Select(FromDto).ToList(), cached.Decision);
             }
             catch (Exception ex)
             {
                 AppLog.Warn($"歌词缓存读取失败（降级为未命中）: {ex.Message}");
-                status = LyricsLoadResult.NotFound;
-                lines = [];
-                return false;
+                return null;
             }
         }
     }
 
     /// <summary>写入或覆盖缓存，并将总记录数控制在 MaxEntries。</summary>
     public void Put(string key, LyricsLoadResult status, IReadOnlyList<LyricLine> lines)
+        => PutCore(key, status, lines, null);
+
+    public Task PutDecisionAsync(string key, LyricsLoadResult status, IReadOnlyList<LyricLine> lines,
+        LyricsDecisionEvidence decision) => Task.Run(() => PutCore(key, status, lines, decision));
+
+    private void PutCore(string key, LyricsLoadResult status, IReadOnlyList<LyricLine> lines,
+        LyricsDecisionEvidence? decision)
     {
-        if (lines.Count == 0)
+        if (status is not (LyricsLoadResult.Loaded or LyricsLoadResult.Instrumental))
             return;
 
         lock (_gate)
@@ -92,7 +99,7 @@ public sealed class SqliteLyricsCacheStore : ILyricsCacheStore
             try
             {
                 EnsureLegacyMigrated();
-                var payload = JsonSerializer.Serialize(lines.Select(ToDto).ToList());
+                var payload = JsonSerializer.Serialize(new CachedLyrics { Lines = lines.Select(ToDto).ToList(), Decision = decision });
                 var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
                 using var connection = _database.Open();
@@ -263,6 +270,12 @@ public sealed class SqliteLyricsCacheStore : ILyricsCacheStore
             dto.EndTime,
             dto.Translation,
             dto.Words?.Select(w => new LyricWord(w.Text, w.StartTime, w.EndTime)).ToList());
+    }
+
+    private sealed class CachedLyrics
+    {
+        public List<CachedLyricLine> Lines { get; set; } = [];
+        public LyricsDecisionEvidence? Decision { get; set; }
     }
 
     private sealed class LyricsCacheFile

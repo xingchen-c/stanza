@@ -18,7 +18,11 @@ internal interface ILyricsCacheStore
     /// <summary>异步写入缓存。</summary>
     Task PutAsync(string key, LyricsLoadResult status, IReadOnlyList<LyricLine> lines)
         => Task.Run(() => Put(key, status, lines));
+
+    Task PutDecisionAsync(string key, LyricsLoadResult status, IReadOnlyList<LyricLine> lines,
+        LyricsDecisionEvidence decision) => PutAsync(key, status, lines);
 }
 
 /// <summary>一次缓存命中的内容。</summary>
-internal readonly record struct LyricsCacheHit(LyricsLoadResult Status, List<LyricLine> Lines);
+internal readonly record struct LyricsCacheHit(LyricsLoadResult Status, List<LyricLine> Lines,
+    LyricsDecisionEvidence? Decision = null);

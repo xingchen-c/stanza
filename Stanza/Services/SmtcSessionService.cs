@@ -31,6 +31,7 @@ public sealed class SmtcSessionService : IDisposable
     private NowPlaying? _nowPlaying;
     private long _lastSwitchStartUtcMs;
     private double _lastEndTimeMs = -1;
+    private readonly TrackDurationEvidence _durationEvidence = new();
     private int _lastTickPositionMs = -1;
     private int _lastTimelineEventLogMs;
 
@@ -263,6 +264,7 @@ public sealed class SmtcSessionService : IDisposable
         SetPlaybackCapabilities(new PlaybackCapabilities(false, false, false, false, false));
         _lastTickPositionMs = -1;
         _lastEndTimeMs = -1;
+        _durationEvidence.Reset();
         _switchFsm.Reset();
         _lastPlaybackStatus = null;
         _lastEventPlaybackStatus = null;
@@ -333,10 +335,12 @@ public sealed class SmtcSessionService : IDisposable
                 props.Title ?? string.Empty,
                 props.Artist ?? string.Empty,
                 props.AlbumTitle ?? string.Empty,
-                ReadDurationMs()));
+                null));
+            metadata = metadata with { DurationMs = ReadDurationMs(metadata.Title, metadata.Artist) };
             var title = metadata.Title;
             var artist = metadata.Artist;
-            var lyricsQuery = new LyricsQuery(title, artist, metadata.DurationMs, metadata.Album);
+            var lyricsQuery = new LyricsQuery(title, artist, metadata.DurationMs, metadata.Album,
+                PreferredLyricsSource(_sourcePolicy.Key, _sourceAppUserModelId));
             AppLog.Debug($"媒体属性: 标题={title} 歌手={artist} 封面引用={props.Thumbnail is not null}");
             // 切歌瞬间元数据可能短暂为空：保留上一首的显示信息，避免悬停面板闪空歌名
             if (!string.IsNullOrWhiteSpace(title))
@@ -449,7 +453,7 @@ public sealed class SmtcSessionService : IDisposable
 
             // 偶发：切歌瞬间搜索失败 / QQ 接口限流。NotFound 不缓存，延迟重试一次，
             // 避免"未找到歌词"被定死整首歌（重试期间已有占位文本，无闪烁）。
-            if (result == LyricsLoadResult.NotFound)
+            if (result is LyricsLoadResult.NotFound or LyricsLoadResult.Ambiguous)
                 _lyricsCoordinator.ScheduleRecovery(
                     key,
                     lyricsQuery,
@@ -465,14 +469,28 @@ public sealed class SmtcSessionService : IDisposable
         }
     }
 
-    /// <summary>读取当前歌曲时长（搜索匹配辅助；切歌瞬间 EndTime 可能还是旧值）</summary>
-    private int? ReadDurationMs()
+    internal static string? PreferredLyricsSource(string policyKey, string sourceAppUserModelId)
     {
+        if (policyKey is PlaybackSourceIds.QqMusic or PlaybackSourceIds.NetEase)
+            return policyKey;
+        // QQ 的另一种实机 AUMID 尚未套用专用播放阈值，但仍可提供歌词来源偏好。
+        return string.Equals(sourceAppUserModelId, "Tencent.QQMusic", StringComparison.OrdinalIgnoreCase)
+            ? "QQ" : null;
+    }
+
+    /// <summary>读取当前歌曲时长（搜索匹配辅助；切歌瞬间 EndTime 可能还是旧值）</summary>
+    private int? ReadDurationMs(string title, string artist)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+            return null;
         try
         {
-            var endTime = _session?.GetTimelineProperties().EndTime;
-            if (endTime is { } t && t > TimeSpan.Zero)
-                return (int)t.TotalMilliseconds;
+            var timeline = _session?.GetTimelineProperties();
+            if (timeline is not null)
+                return _durationEvidence.Read(TrackKey.Of(title, artist),
+                    timeline.EndTime.TotalMilliseconds is > 0 and <= int.MaxValue
+                        ? (int)timeline.EndTime.TotalMilliseconds : null,
+                    timeline.LastUpdatedTime.ToUnixTimeMilliseconds(), DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         }
         catch
         {
@@ -611,7 +629,8 @@ public sealed class SmtcSessionService : IDisposable
             props.Title ?? string.Empty,
             props.Artist ?? string.Empty,
             props.AlbumTitle ?? string.Empty,
-            ReadDurationMs()));
+            null));
+        metadata = metadata with { DurationMs = ReadDurationMs(metadata.Title, metadata.Artist) };
         if (string.IsNullOrWhiteSpace(metadata.Title))
             return RecoveryProbe.Retry();
 
@@ -619,7 +638,10 @@ public sealed class SmtcSessionService : IDisposable
             metadata.Title,
             metadata.Artist,
             metadata.DurationMs,
-            metadata.Album);
+            metadata.Album,
+            PreferredLyricsSource(_sourcePolicy.Key, _sourceAppUserModelId));
+        if (query.Key == expectedKey)
+            _requests.ConfirmTrack(query);
         return query.Key == expectedKey
             ? RecoveryProbe.Ready(query)
             : RecoveryProbe.Abort();

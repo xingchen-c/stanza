@@ -11,25 +11,29 @@ internal sealed class LyricsMemoryCache
     public bool TryGet(
         string key,
         out LyricsLoadResult status,
-        out List<LyricLine> lines)
+        out List<LyricLine> lines,
+        out LyricsDecisionEvidence? decision)
     {
         if (_items.TryGetValue(key, out var entry))
         {
             entry.LastUsedUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             status = entry.Status;
             lines = [.. entry.Lines];
+            decision = entry.Decision;
             return true;
         }
 
         status = LyricsLoadResult.NotFound;
         lines = [];
+        decision = null;
         return false;
     }
 
     public void Put(
         string key,
         LyricsLoadResult status,
-        IReadOnlyList<LyricLine> lines)
+        IReadOnlyList<LyricLine> lines,
+        LyricsDecisionEvidence? decision = null)
     {
         if (_items.Count >= MaxEntries && !_items.ContainsKey(key))
         {
@@ -41,6 +45,7 @@ internal sealed class LyricsMemoryCache
         {
             Status = status,
             Lines = [.. lines],
+            Decision = decision,
             LastUsedUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
         };
     }
@@ -51,6 +56,7 @@ internal sealed class LyricsMemoryCache
     {
         public LyricsLoadResult Status;
         public List<LyricLine> Lines = [];
+        public LyricsDecisionEvidence? Decision;
         public long LastUsedUnixMs;
     }
 }

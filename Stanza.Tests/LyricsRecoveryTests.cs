@@ -143,6 +143,61 @@ public class LyricsRecoveryTests
         Assert.Equal(0, resultCount);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task 歧义候选等待可信时长且最终状态保留歧义或确定歌词(bool durationBecomesReady)
+    {
+        var provider = new AmbiguousProvider();
+        var query = Query with { DurationMs = null };
+        var coordinator = CreateCoordinator(provider, () => Query.Key, 1000, 10, [10]);
+        var results = new List<LyricsLoadResult>();
+        coordinator.ResultApplied += (_, result) => results.Add(result);
+        var probeCount = 0;
+
+        coordinator.ScheduleRecovery(Query.Key, query, _ => Task.FromResult(RecoveryProbe.Ready(
+            durationBecomesReady && ++probeCount > 1 ? Query : query)));
+        await coordinator.RecoveryCompletion.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(LyricsLoadResult.Ambiguous, results[0]);
+        Assert.Equal(durationBecomesReady ? LyricsLoadResult.Loaded : LyricsLoadResult.Ambiguous, results[^1]);
+        Assert.Equal(durationBecomesReady ? ["确定版本"] : [], coordinator.Lyrics.Lines.Select(l => l.Text));
+    }
+
+    [Fact]
+    public async Task 歧义后的元数据持续不可读不应改称未找到歌词()
+    {
+        var coordinator = CreateCoordinator(new AmbiguousProvider(), () => Query.Key, 40, 10, [10]);
+        var query = Query with { DurationMs = null };
+        var results = new List<LyricsLoadResult>();
+        coordinator.ResultApplied += (_, result) => results.Add(result);
+        var firstProbe = true;
+        coordinator.ScheduleRecovery(Query.Key, query, _ =>
+        {
+            var probe = firstProbe ? RecoveryProbe.Ready(query) : RecoveryProbe.Retry();
+            firstProbe = false;
+            return Task.FromResult(probe);
+        });
+
+        await coordinator.RecoveryCompletion.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.NotEmpty(results);
+        Assert.All(results, result => Assert.Equal(LyricsLoadResult.Ambiguous, result));
+    }
+
+    private sealed class AmbiguousProvider : ILyricsProvider
+    {
+        public string Key => "Ambiguous";
+        public string Name => "歧义测试源";
+        public Task<LyricsResult> LoadAsync(LyricsQuery query) => throw new InvalidOperationException();
+        public Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(LyricsQuery query)
+            => Task.FromResult<IReadOnlyList<LyricCandidate>>([
+                new(Key, Name, "180", Query.Title, Query.Artist, "甲录音", 180000, null),
+                new(Key, Name, "200", Query.Title, Query.Artist, "乙录音", 200000, null)]);
+        public Task<LyricsResult> LoadCandidateAsync(LyricCandidate candidate)
+            => Task.FromResult(new LyricsResult(LyricsLoadResult.Loaded, [new(0, "确定版本")]));
+    }
+
     private static LyricsCoordinator CreateCoordinator(
         ILyricsProvider provider,
         Func<string> currentKey,

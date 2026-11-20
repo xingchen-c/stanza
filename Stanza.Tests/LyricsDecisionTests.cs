@@ -1,0 +1,197 @@
+using Stanza.Models;
+using Stanza.Services;
+using Stanza.Services.Lyrics;
+using Lyricify.Lyrics.Searchers.Helpers;
+using Xunit;
+
+namespace Stanza.Tests;
+
+public class LyricsDecisionTests
+{
+    private static readonly LyricsQuery Query = new("唤归", "歌手", 226156, "唤归", "QQ");
+
+    [Fact]
+    public async Task 跨源同曲优先播放平台且自动与手动共用顺序()
+    {
+        var qq = new Provider("QQ", Candidate("QQ"), Result("QQ"));
+        var ne = new Provider("NetEase", Candidate("NetEase"), Result("网易"));
+        var chain = new LyricsProviderChain(ne, qq);
+        var candidates = await chain.GetCandidatesAsync(Query);
+        Assert.Equal("QQ", candidates[0].SourceKey);
+        Assert.Equal(candidates[0].MatchScore, candidates[1].MatchScore);
+        var result = await chain.LoadAsync(Query);
+        Assert.Equal("QQ", result.Lines.Single().Text);
+        Assert.Equal("QQ", result.Decision!.Candidate.SourceKey);
+    }
+
+    [Fact]
+    public async Task 同平台取词失败继续其它源且不调用旧自动入口()
+    {
+        var chain = new LyricsProviderChain(
+            new Provider("QQ", Candidate("QQ"), new(LyricsLoadResult.NotFound, [])),
+            new Provider("NetEase", Candidate("NetEase"), Result("回退")));
+        Assert.Equal("回退", (await chain.LoadAsync(Query)).Lines.Single().Text);
+    }
+
+    [Fact]
+    public async Task 同平台多个重复版本失败后仍能尝试其它来源()
+    {
+        var qq = Candidate("QQ");
+        var chain = new LyricsProviderChain(
+            new Provider("QQ", qq, new(LyricsLoadResult.NotFound, []),
+                qq with { Id = "2" }, qq with { Id = "3" }, qq with { Id = "4" }),
+            new Provider("NetEase", Candidate("NetEase"), Result("其它来源")));
+        Assert.Equal("其它来源", (await chain.LoadAsync(Query)).Lines.Single().Text);
+    }
+
+    [Theory]
+    [InlineData("唤归 (Live)")]
+    [InlineData("唤归 (伴奏版)")]
+    [InlineData("唤归 (Remix)")]
+    public async Task 同源偏好不放行明显不同版本(string title)
+    {
+        var chain = new LyricsProviderChain(
+            new Provider("QQ", Candidate("QQ") with { Title = title }, Result("错版")),
+            new Provider("NetEase", Candidate("NetEase"), Result("原版")));
+        Assert.Equal("原版", (await chain.LoadAsync(Query)).Lines.Single().Text);
+    }
+
+    [Fact]
+    public async Task 其它来源明显更匹配时胜出()
+    {
+        var chain = new LyricsProviderChain(
+            new Provider("QQ", Candidate("QQ") with { DurationMs = 244000, Album = "其它专辑" }, Result("错版")),
+            new Provider("NetEase", Candidate("NetEase"), Result("正确")));
+        Assert.Equal("正确", (await chain.LoadAsync(Query)).Lines.Single().Text);
+    }
+
+    [Fact]
+    public async Task 无时长且不同录音接近时不自动猜选()
+    {
+        var query = Query with { DurationMs = null, Album = null };
+        var chain = new LyricsProviderChain(
+            new Provider("QQ", Candidate("QQ") with { Album = "甲录音" }, Result("甲")),
+            new Provider("NetEase", Candidate("NetEase") with { Album = "乙录音", DurationMs = 244000 }, Result("乙")));
+        Assert.Equal(LyricsLoadResult.Ambiguous, (await chain.LoadAsync(query)).Status);
+    }
+
+    [Fact]
+    public async Task 中立播放器在同等匹配中比较逐字和翻译质量()
+    {
+        var rich = new LyricsResult(LyricsLoadResult.Loaded, [new(0, "完整", 1000, "译文", [new("完", 0, 1000)])]);
+        var chain = new LyricsProviderChain(
+            new Provider("QQ", Candidate("QQ"), Result("逐行")),
+            new Provider("NetEase", Candidate("NetEase"), rich));
+        Assert.Equal("完整", (await chain.LoadAsync(Query with { PreferredSourceKey = null })).Lines.Single().Text);
+    }
+
+    [Fact]
+    public void 歌曲分不信任提供器已加权分数且来源偏好不改变分数()
+    {
+        var a = LyricsCandidateRanker.Score(Candidate("QQ") with { MatchScore = 0.01, MatchType = "Low" }, Query);
+        var b = LyricsCandidateRanker.Score(Candidate("NetEase") with { MatchScore = 1, MatchType = "Perfect" }, Query);
+        Assert.Equal(a.MatchType, b.MatchType);
+        Assert.Equal(a.MatchScore, b.MatchScore);
+        Assert.True(a.PreferredSource);
+        Assert.False(b.PreferredSource);
+    }
+
+    [Theory]
+    [InlineData("QQ", "QQMusic.exe", "QQ")]
+    [InlineData("NetEase", "cloudmusic.exe", "NetEase")]
+    [InlineData("Generic", "Tencent.QQMusic", "QQ")]
+    [InlineData("Generic", "tencent.qqmusic", "QQ")]
+    [InlineData("Generic", "chrome.exe", null)]
+    public void 播放来源偏好识别已知平台而不改变播放策略(string policy, string aumid, string? expected)
+        => Assert.Equal(expected, SmtcSessionService.PreferredLyricsSource(policy, aumid));
+
+    [Fact]
+    public async Task 唤归截图的双歌手同曲同秒数优先QQ()
+    {
+        var query = new LyricsQuery("唤归", "王子健/十八薰", 226000, "唤归", "QQ");
+        var candidate = Candidate("NetEase") with { Title = query.Title, Artist = "王子健, 十八薰" };
+        var chain = new LyricsProviderChain(
+            new Provider("NetEase", candidate, Result("网易")),
+            new Provider("QQ", candidate with { SourceKey = "QQ" }, Result("QQ")));
+        Assert.Equal("QQ", (await chain.LoadAsync(query)).Decision!.Candidate.SourceKey);
+    }
+
+    [Fact]
+    public async Task 七夕稳定时长后跨源选择226秒而非244秒版本()
+    {
+        var query = new LyricsQuery("七夕", "银临", 226156, null, "QQ");
+        var candidate = Candidate("QQ") with { Title = query.Title, Artist = query.Artist, Album = null, DurationMs = 244000 };
+        var chain = new LyricsProviderChain(
+            new Provider("QQ", candidate, Result("244秒版")),
+            new Provider("NetEase", candidate with { SourceKey = "NetEase", DurationMs = 226000 }, Result("226秒版")));
+        Assert.Equal("226秒版", (await chain.LoadAsync(query)).Lines.Single().Text);
+    }
+
+    [Fact]
+    public void 豆蔻精确歌手优先但时长冲突不强行自动选择()
+    {
+        var query = new LyricsQuery("豆蔻", "ZWLJ/国风引力", 235440);
+        var candidate = Candidate("QQ") with { Title = query.Title, Artist = "童译", DurationMs = 235440, Album = null };
+        var ranked = LyricsCandidateRanker.Rank([
+            candidate with { Id = "wrong" },
+            candidate with { Id = "partial", Artist = "ZWLJ, 张三" },
+            candidate with { Id = "exact", Artist = "ZWLJ, 国风引力", DurationMs = 207000 }
+        ], query);
+        Assert.Equal(["exact", "partial", "wrong"], ranked.Select(c => c.Id));
+        Assert.Equal(LyricsLoadResult.Ambiguous, LyricsCandidateRanker.Decide(ranked).Status);
+    }
+
+    [Fact]
+    public void 缺少匹配歌手仍保留同名候选供手动纠错()
+    {
+        var ranked = LyricsCandidateRanker.Rank([Candidate("QQ") with { Artist = "" }], Query);
+        Assert.Single(ranked);
+        Assert.True(ranked[0].TitleMatched);
+        Assert.Equal(LyricsLoadResult.Ambiguous, LyricsCandidateRanker.Decide(ranked).Status);
+    }
+
+    [Fact]
+    public async Task 同平台标记纯音乐后仍可采用其它源的可用歌词()
+    {
+        var chain = new LyricsProviderChain(
+            new Provider("QQ", Candidate("QQ"), new(LyricsLoadResult.Instrumental, [])),
+            new Provider("NetEase", Candidate("NetEase"), Result("歌词")));
+        Assert.Equal("歌词", (await chain.LoadAsync(Query)).Lines.Single().Text);
+    }
+
+    [Fact]
+    public void 库枚举分数契约保持排序及置信档含义()
+    {
+        Assert.Equal([-1, 10, 30, 70, 90, 95, 99, 100], new[] {
+            CompareHelper.MatchType.NoMatch, CompareHelper.MatchType.VeryLow, CompareHelper.MatchType.Low,
+            CompareHelper.MatchType.Medium, CompareHelper.MatchType.PrettyHigh, CompareHelper.MatchType.High,
+            CompareHelper.MatchType.VeryHigh, CompareHelper.MatchType.Perfect }.Select(x => (int)x));
+    }
+
+    [Fact]
+    public void 自动决策缓存按时长专辑及播放平台区分且不读取旧普通key()
+    {
+        var original = LyricsService.AutomaticCacheKey(Query);
+        Assert.NotEqual(Query.Key, original);
+        Assert.NotEqual(original, LyricsService.AutomaticCacheKey(Query with { DurationMs = null }));
+        Assert.NotEqual(original, LyricsService.AutomaticCacheKey(Query with { Album = "另一张专辑" }));
+        Assert.NotEqual(original, LyricsService.AutomaticCacheKey(Query with { PreferredSourceKey = "NetEase" }));
+        Assert.Equal(original, LyricsService.AutomaticCacheKey(Query with { }));
+    }
+
+    internal static LyricCandidate Candidate(string source)
+        => new(source, source, "1", Query.Title, Query.Artist, Query.Album, 226000, null);
+    private static LyricsResult Result(string text) => new(LyricsLoadResult.Loaded, [new(0, text)]);
+
+    private sealed class Provider(string key, LyricCandidate candidate, LyricsResult result,
+        params LyricCandidate[] additional) : ILyricsProvider
+    {
+        public string Key => key;
+        public string Name => key;
+        public Task<LyricsResult> LoadAsync(LyricsQuery query)
+            => throw new InvalidOperationException("自动链必须先统一搜索和决策");
+        public Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(LyricsQuery query)
+            => Task.FromResult<IReadOnlyList<LyricCandidate>>([candidate, .. additional]);
+        public Task<LyricsResult> LoadCandidateAsync(LyricCandidate selected) => Task.FromResult(result);
+    }
+}

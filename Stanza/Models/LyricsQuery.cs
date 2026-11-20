@@ -5,7 +5,8 @@ public sealed record LyricsQuery(
     string Title,
     string Artist,
     int? DurationMs,
-    string? Album = null)
+    string? Album = null,
+    string? PreferredSourceKey = null)
 {
     /// <summary>当前应用内稳定的歌曲 key。</summary>
     public string Key => TrackKey.Of(Title, Artist);

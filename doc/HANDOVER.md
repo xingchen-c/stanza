@@ -25,7 +25,7 @@ Stanza 是 Windows 11 任务栏上的轻量歌词小组件，基于 SMTC 获取�
 | `Stanza/Services/SmtcSessionSelector.cs` | SMTC 管理器、会话枚举、来源筛选和选择；不转发媒体事件 |
 | `Stanza/Services/SmtcSessionService.cs` | 直接订阅选中会话；编排播放状态、曲目、歌词、封面与控制 |
 | `Stanza/Services/Playback/` | 来源策略/适配器、位置追踪、切歌 FSM、能力与封面管线 |
-| `Stanza/Services/Lyrics/` | 提供器、候选聚合、缓存门面、手选与 NotFound 恢复 |
+| `Stanza/Services/Lyrics/` | 提供器、统一排序/决策、缓存门面、手选与未找到/歧义恢复 |
 | `Stanza/Services/Storage/` | 实例化 SQLite 数据库 |
 | `Stanza/Services/Desktop/` | 全屏检测、窗口样式与光标互操作 |
 | `Stanza/Services/Taskbar/` | 任务栏枚举、布局、锚点与独立定位 |
@@ -76,7 +76,8 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 
 | 区域 | 不变量 | 优先查看的测试 |
 | --- | --- | --- |
-| 匹配 | 歌手优先分档；没有匹配歌手时允许降级，不能整源放弃 | `QqMusicMatchingTests`、`QqCandidateSelectionTests` |
+| 匹配 | 自动/手动共用 Lyricify 排序；同源偏好不放行版本或歌手冲突，证据不足保留歧义；候选仍可手选 | `LyricsDecisionTests`、`QqCandidateSelectionTests` |
+| 时长归属 | 切歌后旧时间线不得作为新歌时长，未知时长传空；首次接入保留有效快照 | `TrackDurationEvidenceTests` |
 | 手选过滤 | 异歌始终过滤；勾选只放宽同名版本的歌手；搜索清洗不等于同曲判定 | `MediaInteractionTests`、`QqCandidateSelectionTests` |
 | 请求身份 | 旧会话、旧元数据回包不能改变当前曲目；不能只靠歌词 generation | `MediaRequestTests` |
 | 歌词并发 | 手选优先；失败或取消后可恢复同曲自动加载；迟到请求不得修改新歌显示、状态或选择记忆 | `LyricsGenerationTests`、`LyricsSelectionTests` |
@@ -85,7 +86,7 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 | 位置 | SMTC Position 是 LastUpdatedTime 时刻的快照；位置回退不等于切歌 | `PlaybackSourceTests` |
 | 恢复边界 | 恢复不应清掉仍有效的切歌闸门；新歌未确认时不能错误重置墙钟位置 | `PlaybackSourceTests` |
 | 切歌计时 | TickCount 的负数、零值与回绕都必须正常计算耗时及最近切歌窗口 | `TrackSwitchStateMachineTests` |
-| NotFound | `Ready` / `Retry` / `Abort` 分开；暂停可等待，取消不回写，终止须清理加载占位 | `LyricsRecoveryTests` |
+| 恢复 | `Ready` / `Retry` / `Abort` 分开；等待可信元数据后重判歧义，持续不可读保留歧义，取消不回写 | `LyricsRecoveryTests` |
 | 超时 | 单源超时应继续后续源；候选查询有总预算，保留已取得结果 | `LyricsProviderChainTests` |
 | 设置 | 保存、预览和取消不能静默重置日志级别或丢失其他字段 | `SettingsViewModelTests` |
 | 全屏 | 覆盖整块目标显示器才隐藏；系统外壳不算全屏，另一显示器全屏不影响当前卡片 | `FullscreenDetectionTests` |
@@ -113,7 +114,7 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 - `LocalDatabase`、缓存和选择记忆是实例对象，由 `AppServices` 持有；不要新增全局静态存储。
 - `AppLog` 与 `AppSettingsService` 保持静态。日志用 `AppLog`，关键决策 Info、诊断 Debug。
 - SQLite 共用 `lyrics_cache` / `lyrics_choice`，WAL；`synchronous=NORMAL` 和 `busy_timeout=3000` 需在连接层正确应用。
-- 手选的候选专用缓存与普通曲目缓存不同，详见 [匹配文档](./MATCH-SCORING.md)。
+- 自动缓存按算法版本和查询指纹区分，并存储候选决策证据；手选使用候选专用缓存，旧普通缓存不混用，详见 [匹配文档](./MATCH-SCORING.md)。
 - 真实 `AppLog` 初始化会创建目录并清理旧日志。测试程序集现通过模块初始化器，在业务静态服务初始化前将 `STANZA_DATA_DIR` 指向独立临时目录，并清除单文件覆盖变量；测试运行真实存储和日志实现。新增独立探针仍需显式规划数据目录，不能依赖测试程序集替它隔离。
 
 ## 8. 接手与验证顺序
@@ -127,4 +128,4 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 
 当前使用 .NET 10 LTS，不能套用 .NET 11 才引入的 `Environment.TickCount` 睡眠计时变化。休眠恢复仍需人工验收；数据目录配置不改播放计时逻辑。
 
-待办与优先级只在 [ROADMAP.md](./ROADMAP.md) 维护；跨源候选决策仍是计划，不是本轮已完成功能。
+待办与优先级只在 [ROADMAP.md](./ROADMAP.md) 维护；统一候选决策已实现，实网准确率、耗时与真实切歌快照仍待验收，见[匹配文档](./MATCH-SCORING.md)。

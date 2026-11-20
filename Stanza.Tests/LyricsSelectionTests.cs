@@ -95,7 +95,7 @@ public class LyricsSelectionTests
         service.InvalidateInFlight();
         provider.Auto.SetResult(Result("旧歌"));
         await load;
-        Assert.Equal("旧歌", store.Items[Query.Key].Lines.Single().Text);
+        Assert.Equal("旧歌", store.Items[LyricsService.AutomaticCacheKey(Query)].Lines.Single().Text);
         Assert.Empty(service.Lines);
     }
 
@@ -103,7 +103,7 @@ public class LyricsSelectionTests
     public async Task 手选失败保留已有歌词且过期key不发起请求()
     {
         var store = new Cache();
-        store.Items[Query.Key] = new LyricsCacheHit(LyricsLoadResult.Loaded, [new(0, "可用词")]);
+        store.Items[LyricsService.AutomaticCacheKey(Query)] = new LyricsCacheHit(LyricsLoadResult.Loaded, [new(0, "可用词")]);
         var provider = new Provider();
         var coordinator = new LyricsCoordinator(store, new InMemoryLyricsChoiceStore(), () => Query.Key, provider);
         await coordinator.LoadAsync(Query);
@@ -151,7 +151,7 @@ public class LyricsSelectionTests
 
         await coordinator.RecoveryCompletion.WaitAsync(TimeSpan.FromSeconds(2));
         Assert.Equal("正常自动歌词", coordinator.Lyrics.Lines.Single().Text);
-        Assert.Equal("正常自动歌词", store.Items[Query.Key].Lines.Single().Text);
+        Assert.Equal("正常自动歌词", store.Items[LyricsService.AutomaticCacheKey(Query)].Lines.Single().Text);
         Assert.False(choices.TryGet(Query.Key, out _));
         Assert.Equal([LyricsLoadResult.Loaded], applied);
     }
@@ -277,8 +277,16 @@ public class LyricsSelectionTests
             AutoStarted.TrySetResult();
             return Auto.Task;
         }
+        public Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(LyricsQuery query)
+            => Task.FromResult<IReadOnlyList<LyricCandidate>>([
+                new(Key, Name, "auto", query.Title, query.Artist, query.Album, query.DurationMs, null)]);
         public Task<LyricsResult> LoadCandidateAsync(LyricCandidate candidate)
         {
+            if (candidate.Id == "auto")
+            {
+                AutoStarted.TrySetResult();
+                return Auto.Task;
+            }
             CandidateLoads++;
             return Manual.Task;
         }

@@ -13,23 +13,6 @@ public class QqMusicMatchingTests
             $"期望 {expected}，实际 {actual}");
     }
 
-    // ---- 歌名相关性 ----
-
-    [Theory]
-    [InlineData("伴宅日记", "伴宅日记", true)]                  // 完全一致
-    [InlineData("【洛天依】伴宅日记【H6音乐】", "伴宅日记", true)] // 合集/翻唱标题包含原名
-    [InlineData("伴宅日记（伴奏）", "伴宅日记", true)]           // 伴奏后缀
-    [InlineData("Stairway to Heaven", "stairway to heaven", true)] // 大小写
-    [InlineData("狼人杀狂想曲", "伴宅日记", false)]               // 历史 bug：同歌手不同歌混入候选
-    [InlineData("理想不大巡演上海站回顾：最搞笑致谢环节！", "理想不大", true)] // 巡演回顾也含歌名
-    [InlineData("星", "星炬不熄", false)]                          // 单字不参与包含匹配
-    [InlineData("花", "碎花", false)]                              // 单字不参与包含匹配
-    [InlineData("花", "花", true)]                                 // 单字完全相等仍有效
-    public void TitlesRelated_判断歌名是否同一首(string lyricsTitle, string expectedTitle, bool expected)
-    {
-        Assert.Equal(expected, QqMusicLyricsProvider.TitlesRelated(lyricsTitle, expectedTitle));
-    }
-
     // ---- 标题前缀清洗 ----
 
     [Theory]
@@ -55,25 +38,6 @@ public class QqMusicMatchingTests
     public void ShortenArtists_群星歌手截到前N位(string? artist, int maxCount, string? expected)
     {
         Assert.Equal(expected, QqMusicLyricsProvider.ShortenArtists(artist, maxCount));
-    }
-
-    // ---- 匹配度排序权重 ----
-
-    [Theory]
-    [InlineData("Perfect", 100)]
-    [InlineData("VeryHigh", 99)]
-    [InlineData("High", 95)]
-    [InlineData("PrettyHigh", 90)]
-    [InlineData("Medium", 70)]
-    [InlineData("Low", 30)]
-    [InlineData("VeryLow", 10)]
-    [InlineData("NoMatch", 0)]
-    [InlineData("Unknown", 0)]
-    [InlineData(null, 0)]
-    [InlineData("未来版本的新枚举名", 0)] // 库升级改名时静默落底，测试锚定现状
-    public void MatchTypeRank_权重排序(string? matchType, int expected)
-    {
-        Assert.Equal(expected, QqMusicLyricsProvider.MatchTypeRank(matchType));
     }
 
     // ---- 时间戳判定 ----
@@ -123,35 +87,7 @@ public class QqMusicMatchingTests
         Assert.Null(QqMusicLyricsProvider.MatchByTime(2000, map));          // 超出容差
     }
 
-    // ---- 综合打分（MATCH-SCORING）----
-
-    [Fact]
-    public void TitleScore_完全相等满分()
-    {
-        AssertClose(1.0, QqMusicLyricsProvider.TitleScore("伴宅日记", "伴宅日记"));
-    }
-
-    [Fact]
-    public void TitleScore_合集长标题低于满分()
-    {
-        var score = QqMusicLyricsProvider.TitleScore("【洛天依】伴宅日记【H6音乐】", "伴宅日记");
-        Assert.True(score < 1.0 && score > 0.6);
-    }
-
-    [Fact]
-    public void DurationScore_平滑衰减锁定Tau()
-    {
-        AssertClose(1.0, QqMusicLyricsProvider.DurationScore(1000, 1000));
-        AssertClose(0.5, QqMusicLyricsProvider.DurationScore(9000, 1000), 0.01); // Δ=8s → 0.5
-        Assert.True(QqMusicLyricsProvider.DurationScore(31000, 1000)!.Value < 0.1); // Δ=30s → ≈0.07
-    }
-
-    [Fact]
-    public void DurationScore_任一时长缺失为缺失()
-    {
-        Assert.Null(QqMusicLyricsProvider.DurationScore(null, 1000));
-        Assert.Null(QqMusicLyricsProvider.DurationScore(1000, null));
-    }
+    // ---- 歌手档识别 ----
 
     [Fact]
     public void ArtistScore_相等满分()
@@ -185,140 +121,4 @@ public class QqMusicMatchingTests
         Assert.Null(QqMusicLyricsProvider.ArtistScore(["许嵩"], null));
     }
 
-    [Fact]
-    public void 全维匹配高分()
-    {
-        var score = QqMusicLyricsProvider.ComputeMatchScore(
-            "美人蕉", ["李凯年", "李琳"], "专辑", 234000, "PrettyHigh",
-            "美人蕉", "李凯年/李琳", 237000);
-        Assert.True(score > 0.9);
-    }
-
-    [Fact]
-    public void 时长严重错报仍保持中高分_不再一票否决()
-    {
-        // 历史场景：伴宅日记 SMTC 错报 210s，实际 263s，差 53s
-        var score = QqMusicLyricsProvider.ComputeMatchScore(
-            "伴宅日记", ["千月兔"], null, 263000, "High",
-            "伴宅日记", "千月兔", 210000);
-        Assert.True(score > 0.5);
-    }
-
-    [Fact]
-    public void 同名两候选时长近者优先()
-    {
-        static double Score(int duration) => QqMusicLyricsProvider.ComputeMatchScore(
-            "伴宅日记", ["千月兔"], null, duration, "Medium",
-            "伴宅日记", "千月兔", 263000);
-        Assert.True(Score(263000) > Score(210000));
-    }
-
-    [Fact]
-    public void 时长缺失归一化重分配_不比时长严重错误更差()
-    {
-        double WithoutDuration() => QqMusicLyricsProvider.ComputeMatchScore(
-            "伴宅日记", ["千月兔"], null, null, "High",
-            "伴宅日记", "千月兔", null);
-        double WithBadDuration() => QqMusicLyricsProvider.ComputeMatchScore(
-            "伴宅日记", ["千月兔"], null, 1000, "High",
-            "伴宅日记", "千月兔", 263000); // 时长分≈0
-        Assert.True(WithoutDuration() > WithBadDuration());
-    }
-
-    // ---- 排序主键：歌手精确度优先（同名不同歌手不串歌）----
-
-    [Fact]
-    public void ArtistRankKey_精确歌手高于部分交集高于无交集()
-    {
-        var exact = QqMusicLyricsProvider.ArtistRankKey(["ZWLJ", "国风引力"], "ZWLJ/国风引力");
-        var partial = QqMusicLyricsProvider.ArtistRankKey(["ZWLJ", "张三"], "ZWLJ/国风引力");
-        var none = QqMusicLyricsProvider.ArtistRankKey(["童译"], "ZWLJ/国风引力");
-        Assert.True(exact > partial && partial > none);
-    }
-
-    [Fact]
-    public void ArtistRankKey_期望歌手缺失时为最低档()
-    {
-        // SMTC 给不出歌手时，主键退化为 0，排序退回综合分（时长+MatchType），不误排
-        AssertClose(0, QqMusicLyricsProvider.ArtistRankKey(["许嵩"], null));
-    }
-
-    [Fact]
-    public void ArtistRankKey_无交集低于自动匹配闸门()
-    {
-        var noMatch = QqMusicLyricsProvider.ArtistRankKey(["童译"], "ZWLJ/国风引力");
-        var partialMatch = QqMusicLyricsProvider.ArtistRankKey(["ZWLJ", "张三"], "ZWLJ/国风引力");
-
-        Assert.True(noMatch < QqMusicLyricsProvider.ArtistMatchThreshold);
-        Assert.True(partialMatch >= QqMusicLyricsProvider.ArtistMatchThreshold);
-    }
-
-    [Fact]
-    public void 无歌手匹配候选时应降级而非放弃()
-    {
-        var scored = new List<(int Index, double Rank)>
-        {
-            (0, 0.2),
-            (1, 0.2),
-            (2, 0.2)
-        };
-
-        var selection = QqMusicLyricsProvider.SelectByArtistTier(
-            scored,
-            x => x.Rank,
-            hasExpectedArtist: true);
-
-        Assert.True(selection.UsedFallback);
-        Assert.Equal(scored, selection.Ranked);
-    }
-
-    [Fact]
-    public void 存在歌手匹配候选时应只用匹配的()
-    {
-        var scored = new List<(int Index, double Rank)>
-        {
-            (0, 0.2),
-            (1, 1.0),
-            (2, 0.6)
-        };
-
-        var selection = QqMusicLyricsProvider.SelectByArtistTier(
-            scored,
-            x => x.Rank,
-            hasExpectedArtist: true);
-
-        Assert.False(selection.UsedFallback);
-        Assert.Equal([(1, 1.0), (2, 0.6)], selection.Ranked);
-    }
-
-    [Fact]
-    public void 同名不同歌手_时长凑巧接近也不反超精确歌手_豆蔻案例()
-    {
-        // 真实场景：SMTC 报「豆蔻 / ZWLJ/国风引力 / 235440ms」，QQ 返回两个同名候选——
-        // 正确歌手 ZWLJ/国风引力（时长差 28s）与错歌手 童译（时长差仅 1.4s）。
-        double scoreCorrect = QqMusicLyricsProvider.ComputeMatchScore(
-            "豆蔻", ["ZWLJ", "国风引力"], "豆蔻", 207000, "Medium",
-            "豆蔻", "ZWLJ/国风引力", 235440);
-        double scoreWrong = QqMusicLyricsProvider.ComputeMatchScore(
-            "豆蔻", ["童译"], "好听的BGM背景纯音乐推荐大全53", 234000, "Medium",
-            "豆蔻", "ZWLJ/国风引力", 235440);
-
-        // 旧分排序会选错（证明本修复靠的是「歌手主键」，而不是调权重掩盖）
-        Assert.True(scoreWrong > scoreCorrect);
-
-        // 新排序：主键（歌手精确度）决定顺序，正确候选恒排在错候选前
-        double rankCorrect = QqMusicLyricsProvider.ArtistRankKey(["ZWLJ", "国风引力"], "ZWLJ/国风引力");
-        double rankWrong = QqMusicLyricsProvider.ArtistRankKey(["童译"], "ZWLJ/国风引力");
-        Assert.True(rankCorrect > rankWrong);
-    }
-
-    [Fact]
-    public void 同名多版本_同歌手档内仍靠时长选版本()
-    {
-        // 同歌手（主键同为 1.0）时，时长近者综合分更高 → 选对版本（DJ/Live/伴奏）
-        static double Score(int duration) => QqMusicLyricsProvider.ComputeMatchScore(
-            "长生诀", ["西瓜JUN"], null, duration, "Medium",
-            "长生诀", "西瓜JUN", 191000);
-        Assert.True(Score(191000) > Score(23000)); // 原曲 191s > 23s 片段版
-    }
 }

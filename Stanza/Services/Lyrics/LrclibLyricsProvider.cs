@@ -5,11 +5,7 @@ using Lyricify.Lyrics.Searchers;
 
 namespace Stanza.Services.Lyrics;
 
-/// <summary>LRCLIB 歌词源（兜底）：搜索 → 按 ID 取 LRC → 解析成带时间轴的行</summary>
-/// <summary>
-///     LRCLIB 歌词源：作为 QQ / 网易云之后的通用兜底。
-///     搜索完成后仍会执行歌名相关性和歌手匹配校验，避免返回同名不同歌手的歌词。
-/// </summary>
+/// <summary>LRCLIB 歌词源：搜索候选，按 ID 获取并解析同步歌词。</summary>
 public sealed class LrclibLyricsProvider : ILyricsProvider
 {
     /// <inheritdoc />
@@ -19,53 +15,37 @@ public sealed class LrclibLyricsProvider : ILyricsProvider
     public string Name => "LRCLIB";
 
     /// <inheritdoc />
-    public async Task<LyricsResult> LoadAsync(LyricsQuery query)
-    {
-        var title = query.Title;
-        var artist = query.Artist;
-        if (string.IsNullOrWhiteSpace(title))
-            return new LyricsResult(LyricsLoadResult.NotFound, []);
+    public Task<LyricsResult> LoadAsync(LyricsQuery query) => new LyricsProviderChain(this).LoadAsync(query);
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(LyricsQuery query)
+    {
         try
         {
-            // 1. 用歌曲信息在 LRCLIB 搜索，拿到歌曲 Id
             var metadata = new TrackMetadata
             {
-                Title = title,
-                Artist = artist,
-                DurationMs = query.DurationMs
+                Title = query.Title, Artist = query.Artist, Album = query.Album, DurationMs = query.DurationMs
             };
+            var results = await SearcherHelper.LRCLIBSearcher.SearchForResults(metadata);
+            return (results ?? []).OfType<LRCLIBSearchResult>().Select(r => new LyricCandidate(
+                Key, Name, r.Id.ToString(), r.Title ?? string.Empty, string.Join(", ", r.Artists ?? []),
+                r.Album, r.DurationMs, r.MatchType?.ToString())).ToArray();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn($"LRCLIB 搜索失败: {ex.Message}");
+            return [];
+        }
+    }
 
-            var searchResult = await SearcherHelper.LRCLIBSearcher.SearchForResult(metadata);
-            if (searchResult is not LRCLIBSearchResult lrclib)
-                return new LyricsResult(LyricsLoadResult.NotFound, []);
-
-            if (!QqMusicLyricsProvider.TitlesRelated(lrclib.Title ?? title, title))
-                return new LyricsResult(LyricsLoadResult.NotFound, []);
-
-            if (!string.IsNullOrWhiteSpace(artist) &&
-                QqMusicLyricsProvider.ArtistRankKey(lrclib.Artists, artist) <
-                QqMusicLyricsProvider.ArtistMatchThreshold)
-            {
-                // LRCLIB 是链尾且只有单结果，拒绝即整首歌无歌词。
-                // 歌名精确相等时按“歌手写法差异”放行；只有歌名包含关系时才拒绝。
-                var titleExact = QqMusicLyricsProvider.Normalize(lrclib.Title ?? title) ==
-                                 QqMusicLyricsProvider.Normalize(title);
-                if (!titleExact)
-                {
-                    AppLog.Info(
-                        $"LRCLIB 歌手与歌名均不精确，拒绝: '{title}' / '{artist}' / " +
-                        $"候选='{lrclib.Title}' / 候选歌手='{string.Join(", ", lrclib.Artists ?? [])}'");
-                    return new LyricsResult(LyricsLoadResult.NotFound, []);
-                }
-
-                AppLog.Warn(
-                    $"LRCLIB 歌手不匹配但歌名精确相等，按歌手写法差异放行: '{title}' / '{artist}' / " +
-                    $"候选歌手='{string.Join(", ", lrclib.Artists ?? [])}'");
-            }
-
-            // 2. 用歌曲 Id 获取歌词
-            var response = await ProviderHelper.LRCLIBApi.GetById(lrclib.Id);
+    /// <inheritdoc />
+    public async Task<LyricsResult> LoadCandidateAsync(LyricCandidate candidate)
+    {
+        if (!int.TryParse(candidate.Id, out var id))
+            return new LyricsResult(LyricsLoadResult.NotFound, []);
+        try
+        {
+            var response = await ProviderHelper.LRCLIBApi.GetById(id);
             if (response is null)
                 return new LyricsResult(LyricsLoadResult.NotFound, []);
 
@@ -73,7 +53,6 @@ public sealed class LrclibLyricsProvider : ILyricsProvider
             if (response.Instrumental)
                 return new LyricsResult(LyricsLoadResult.Instrumental, []);
 
-            // 3. 优先解析同步歌词（LRC）
             var rawLyrics = response.SyncedLyrics;
             if (!string.IsNullOrWhiteSpace(rawLyrics))
             {
@@ -94,10 +73,6 @@ public sealed class LrclibLyricsProvider : ILyricsProvider
                 if (parsed.Count > 0)
                     return new LyricsResult(LyricsLoadResult.Loaded, parsed);
             }
-
-            // 没有同步歌词但有纯文本歌词 → 按无时间轴处理（显示占位文案）
-            if (!string.IsNullOrWhiteSpace(response.PlainLyrics))
-                return new LyricsResult(LyricsLoadResult.Instrumental, []);
 
             return new LyricsResult(LyricsLoadResult.NotFound, []);
         }

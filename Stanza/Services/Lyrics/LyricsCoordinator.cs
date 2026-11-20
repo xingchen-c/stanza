@@ -3,7 +3,7 @@ using Stanza.Models;
 
 namespace Stanza.Services.Lyrics;
 
-/// <summary>歌词加载、候选选择和 NotFound 恢复编排。</summary>
+/// <summary>歌词加载、候选选择和未找到/歧义结果的恢复编排。</summary>
 internal sealed class LyricsCoordinator
 {
     private const int DefaultRecoveryLifetimeMs = 30_000;
@@ -212,13 +212,14 @@ internal sealed class LyricsCoordinator
             if (!IsCurrent(key, generation, token))
                 return;
 
-            if (quickResult != LyricsLoadResult.NotFound)
+            if (quickResult is not (LyricsLoadResult.NotFound or LyricsLoadResult.Ambiguous))
             {
                 ApplyResult(key, quickResult);
                 return;
             }
 
-            ApplyResult(key, LyricsLoadResult.NotFound, showNotFound: false);
+            ApplyResult(key, quickResult, showNotFound: false);
+            var lastResult = quickResult;
             var attempt = 0;
             while (attempt < _recoveryBackoffMs.Length)
             {
@@ -237,8 +238,8 @@ internal sealed class LyricsCoordinator
                     if (stopwatch.ElapsedMilliseconds > _recoveryLifetimeMs)
                     {
                         AppLog.Info(
-                            $"NotFound 恢复等待超过 {_recoveryLifetimeMs}ms 仍不可读，落地为未找到: key={key}");
-                        ApplyResult(key, LyricsLoadResult.NotFound);
+                            $"歌词恢复等待超过 {_recoveryLifetimeMs}ms 仍不可读，保留结果={lastResult}: key={key}");
+                        ApplyResult(key, lastResult);
                         return;
                     }
 
@@ -252,10 +253,11 @@ internal sealed class LyricsCoordinator
                 var query = probe.Query!;
                 AppLog.Debug($"NotFound 后台补抓第 {attempt} 次: {query.Title} / {query.Artist}");
                 var result = await LoadAsync(query, generation, token);
+                lastResult = result;
                 if (!IsCurrent(key, generation, token))
                     return;
 
-                if (result == LyricsLoadResult.NotFound)
+                if (result is LyricsLoadResult.NotFound or LyricsLoadResult.Ambiguous)
                     continue;
 
                 AppLog.Info($"NotFound 后台补抓得到确定结果: {result}");
@@ -265,8 +267,8 @@ internal sealed class LyricsCoordinator
 
             if (!IsCurrent(key, generation, token))
                 return;
-            AppLog.Info($"NotFound 补抓 {_recoveryBackoffMs.Length} 次均失败，确认无歌词");
-            ApplyResult(key, LyricsLoadResult.NotFound);
+            AppLog.Info($"歌词补抓 {_recoveryBackoffMs.Length} 次未确定，保留结果={lastResult}");
+            ApplyResult(key, lastResult);
         }
         catch (OperationCanceledException)
         {
@@ -292,6 +294,7 @@ internal sealed class LyricsCoordinator
         return result switch
         {
             LyricsLoadResult.Loaded => string.Empty,
+            LyricsLoadResult.Ambiguous => "歌词版本匹配不确定，请选择歌词",
             LyricsLoadResult.Instrumental => "此歌曲为没有填词的纯音乐，请您欣赏",
             _ => "未找到歌词"
         };

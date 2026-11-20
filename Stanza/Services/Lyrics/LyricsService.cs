@@ -3,7 +3,7 @@ using Stanza.Models;
 namespace Stanza.Services.Lyrics;
 
 /// <summary>
-///     歌词服务门面：按顺序尝试各歌词源，缓存当前歌曲的歌词行，并按播放位置取当前行。
+///     歌词服务门面：统一候选决策、缓存当前歌曲的歌词行，并按播放位置取当前行。
 /// </summary>
 public sealed class LyricsService
 {
@@ -16,7 +16,7 @@ public sealed class LyricsService
     private readonly Dictionary<string, int> _manualGenerations = [];
     private readonly SemaphoreSlim _cacheWriteGate = new(1, 1);
 
-    /// <summary>注入持久化缓存与歌词源（按顺序尝试，第一个返回 Loaded/Instrumental 的胜出）</summary>
+    /// <summary>注入持久化缓存与参与统一决策的歌词源。</summary>
     internal LyricsService(ILyricsCacheStore cacheStore, params ILyricsProvider[] providers)
     {
         _cacheStore = cacheStore;
@@ -54,16 +54,18 @@ public sealed class LyricsService
         if (IsCurrentGeneration(generation) && _linesKey != query.Key)
             Clear();
 
-        if (await TryLoadCachedAsync(query.Key, generation, cancellationToken) is { } cached)
+        var cacheKey = AutomaticCacheKey(query);
+        if (await TryLoadCachedAsync(cacheKey, generation, cancellationToken, query.Key) is { } cached)
             return cached;
 
         var result = await _providerChain.LoadAsync(query, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
-        if (result.Status == LyricsLoadResult.NotFound)
+        if (result.Status is LyricsLoadResult.NotFound or LyricsLoadResult.Ambiguous)
             return result.Status;
 
         var lines = result.Lines.ToList();
-        await CacheAsync(query.Key, result.Status, lines, generation, manual: false, cancellationToken);
+        await CacheAsync(cacheKey, result.Status, lines, generation, manual: false, cancellationToken,
+            query.Key, result.Decision);
         cancellationToken.ThrowIfCancellationRequested();
         if (IsCurrentGeneration(generation))
         {
@@ -77,11 +79,14 @@ public sealed class LyricsService
     internal static string CandidateCacheKey(string key, LyricCandidate candidate)
         => $"candidate:{key.Length}:{key}{candidate.SourceKey.Length}:{candidate.SourceKey}{candidate.Id}";
 
+    internal static string AutomaticCacheKey(LyricsQuery query)
+        => $"auto:{LyricsCandidateRanker.AlgorithmVersion}:{LyricsCandidateRanker.Fingerprint(query)}";
+
     internal async Task<LyricsLoadResult?> TryLoadCachedAsync(
         string key, int generation, CancellationToken cancellationToken = default, string? trackKey = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (_memoryCache.TryGet(key, out var status, out var lines))
+        if (_memoryCache.TryGet(key, out var status, out var lines, out _))
         {
             if (IsCurrentGeneration(generation))
             {
@@ -97,7 +102,7 @@ public sealed class LyricsService
             return null;
 
         if (MayCache(trackKey ?? key, generation))
-            _memoryCache.Put(key, hit.Status, hit.Lines);
+            _memoryCache.Put(key, hit.Status, hit.Lines, hit.Decision);
         if (IsCurrentGeneration(generation))
         {
             _lines = hit.Lines;
@@ -110,19 +115,23 @@ public sealed class LyricsService
         => !_manualGenerations.TryGetValue(key, out var manualGeneration) || generation >= manualGeneration;
 
     private async Task CacheAsync(string key, LyricsLoadResult status, List<LyricLine> lines,
-        int generation, bool manual, CancellationToken token)
+        int generation, bool manual, CancellationToken token, string? trackKey = null,
+        LyricsDecisionEvidence? decision = null)
     {
         // 磁盘写入也保持调用顺序，防止已开始的旧自动写入在手选写入之后才完成。
         await _cacheWriteGate.WaitAsync(token);
         try
         {
-            if (!MayCache(key, generation) || (manual && !IsCurrentGeneration(generation)))
+            if (!MayCache(trackKey ?? key, generation) || (manual && !IsCurrentGeneration(generation)))
                 return;
             token.ThrowIfCancellationRequested();
-            await _cacheStore.PutAsync(key, status, lines);
+            if (decision is not null)
+                await _cacheStore.PutDecisionAsync(key, status, lines, decision);
+            else
+                await _cacheStore.PutAsync(key, status, lines);
             token.ThrowIfCancellationRequested();
-            if (MayCache(key, generation) && (!manual || IsCurrentGeneration(generation)))
-                _memoryCache.Put(key, status, lines);
+            if (MayCache(trackKey ?? key, generation) && (!manual || IsCurrentGeneration(generation)))
+                _memoryCache.Put(key, status, lines, decision);
         }
         finally
         {

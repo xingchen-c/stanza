@@ -137,13 +137,17 @@ public partial class LyricsPickerWindow : Window
     private static CandidateView ToView(LyricCandidate candidate)
     {
         var parts = new List<string> { candidate.SourceName };
+        if (candidate.PreferredSource)
+            parts.Add("与当前播放器同源");
+        if (candidate.VersionMatched == false)
+            parts.Add("版本标记不同");
         if (candidate.TitleMatched == false)
             parts.Add("歌名不一致");
         if (candidate.ArtistMatched == false)
             parts.Add("歌手可能不一致");
         parts.Add(FormatMatchType(candidate.MatchType));
         if (candidate.MatchScore > 0)
-            parts.Add($"综合匹配 {candidate.MatchScore * 100:F0}%");
+            parts.Add($"匹配等级分 {candidate.MatchScore * 100:F0}");
         if (candidate.DurationMs is { } ms)
             parts.Add($"{ms / 60000}:{ms % 60000 / 1000:00}");
         if (!string.IsNullOrWhiteSpace(candidate.Album))

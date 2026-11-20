@@ -7,7 +7,7 @@
 ```text
 播放器 SMTC → 播放源策略 / 适配器 → NowPlaying / LyricsQuery
                                              ↓
-                       歌词源 QQ → 网易云 → LRCLIB
+                       歌词源 QQ / 网易云 / LRCLIB → 统一候选决策
                                              ↓
                                    歌词与渲染投影
 ```
@@ -84,7 +84,7 @@
 - 暂停时冻结显示位置，避免微小回退导致卡拉 OK 来回跳；明确的大幅外部 seek 仍需按策略处理。
 - 恢复边界不能清除有效的切歌闸门，旧快照不能把新歌拖回上一首位置。
 - 暂停期间确认新曲目时清理旧词，恢复后可以加载，不能因已有旧歌词而永久跳过刷新。
-- 时间线能用于位置计算，不意味着 EndTime 已证明属于当前新歌；匹配层的时长归属仍是待办，见 [匹配文档第 11 节](./MATCH-SCORING.md#11-未完成同名多版本与跨源统一决策)。
+- 时间线能用于位置计算，不意味着 EndTime 已证明属于当前新歌；匹配时长已由 `TrackDurationEvidence` 限定归属；后续换曲等待元数据确认后的时间线，未知时长传空，见[匹配文档](./MATCH-SCORING.md#2-时长归属与播放来源)。
 
 ## 6. 歌词与选择器接入
 
@@ -132,7 +132,7 @@ Task<bool> ApplyLyricCandidateAsync(
 
 ## 10. 未完成项与验收
 
-未完成：播放来源设置 UI、词源配置、主动 seek、协调器进一步减负，以及跨源自动候选决策。优先级统一见 [ROADMAP.md](./ROADMAP.md)。
+未完成：播放来源设置 UI、词源配置、主动 seek、协调器进一步减负，以及统一候选决策的实网校准。优先级统一见 [ROADMAP.md](./ROADMAP.md)。
 
 自动回归重点：`PlaybackSourceTests`、`MediaRequestTests`、`LyricsGenerationTests`、`LyricsRecoveryTests`、`LyricsSelectionTests` 和 `MediaInteractionTests`。最近验证结果与日志隔离限制见 [索引](./README.md#最近验证基线)。
 

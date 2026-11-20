@@ -17,11 +17,11 @@ public class LyricsProviderChainTests
         var broken = new Provider { Search = Task.FromException<IReadOnlyList<LyricCandidate>>(new InvalidOperationException("测试")) };
         var chain = new LyricsProviderChain(TimeSpan.FromMilliseconds(30), TimeSpan.FromMilliseconds(500), slow, good, broken);
         var results = await chain.GetCandidatesAsync(Query).WaitAsync(TimeSpan.FromSeconds(2));
-        Assert.Equal([Candidate with { TitleMatched = false }], results);
+        Assert.Equal([LyricsCandidateRanker.Score(Candidate, Query)], results);
     }
 
     [Fact]
-    public async Task 候选查询取消及时返回且不继续调用后续源()
+    public async Task 候选搜索并发且取消及时返回()
     {
         var slow = new Provider { Search = new TaskCompletionSource<IReadOnlyList<LyricCandidate>>().Task };
         var later = new Provider();
@@ -30,7 +30,7 @@ public class LyricsProviderChainTests
         var task = chain.GetCandidatesAsync(Query, cts.Token);
         cts.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task.WaitAsync(TimeSpan.FromSeconds(1)));
-        Assert.Equal(0, later.SearchCalls);
+        Assert.Equal(1, later.SearchCalls);
     }
 
     [Fact]
@@ -39,7 +39,7 @@ public class LyricsProviderChainTests
         var good = new Provider { Search = Task.FromResult<IReadOnlyList<LyricCandidate>>([Candidate]) };
         var slow = new Provider { Search = new TaskCompletionSource<IReadOnlyList<LyricCandidate>>().Task };
         var chain = new LyricsProviderChain(TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(40), good, slow);
-        Assert.Equal([Candidate with { TitleMatched = false }], await chain.GetCandidatesAsync(Query).WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.Equal([LyricsCandidateRanker.Score(Candidate, Query)], await chain.GetCandidatesAsync(Query).WaitAsync(TimeSpan.FromSeconds(2)));
     }
 
     [Fact]

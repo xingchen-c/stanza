@@ -14,13 +14,13 @@ public interface ILyricsProvider
     /// <summary>按统一查询加载歌词；返回结果（含行列表）</summary>
     Task<LyricsResult> LoadAsync(LyricsQuery query);
 
-    /// <summary>搜索候选列表（手动选择歌词用）；不支持的源返回空列表</summary>
+    /// <summary>返回搜索元数据，供自动与手动统一排序；不支持的源返回空列表</summary>
     Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(LyricsQuery query)
     {
         return Task.FromResult<IReadOnlyList<LyricCandidate>>([]);
     }
 
-    /// <summary>按用户选中的候选直接取歌词；不支持的源返回 NotFound</summary>
+    /// <summary>按已选候选直接取歌词（自动与手动共用）；不支持的源返回 NotFound</summary>
     Task<LyricsResult> LoadCandidateAsync(LyricCandidate candidate)
     {
         return Task.FromResult(new LyricsResult(LyricsLoadResult.NotFound, []));

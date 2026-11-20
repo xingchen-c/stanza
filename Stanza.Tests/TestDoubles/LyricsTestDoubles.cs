@@ -94,7 +94,8 @@ internal sealed class GatedLyricsProvider : ILyricsProvider
             : Task.FromResult(new LyricsResult(LyricsLoadResult.NotFound, []));
 
     public Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(LyricsQuery query)
-        => Task.FromResult<IReadOnlyList<LyricCandidate>>([]);
+        => Task.FromResult<IReadOnlyList<LyricCandidate>>([
+            new(Key, Name, query.Title, query.Title, query.Artist, query.Album, query.DurationMs, null)]);
 
     public Task<LyricsResult> LoadCandidateAsync(LyricCandidate candidate)
         => _gates.TryGetValue(candidate.Title, out var gate)
@@ -116,6 +117,13 @@ internal sealed class CountingLyricsProvider(LyricsLoadResult result) : ILyricsP
         return Task.FromResult(new LyricsResult(result, []));
     }
 
+    public Task<LyricsResult> LoadCandidateAsync(LyricCandidate candidate)
+    {
+        LoadCount++;
+        return Task.FromResult(new LyricsResult(result, []));
+    }
+
     public Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(LyricsQuery query)
-        => Task.FromResult<IReadOnlyList<LyricCandidate>>([]);
+        => Task.FromResult<IReadOnlyList<LyricCandidate>>([
+            new(Key, Name, query.Title, query.Title, query.Artist, query.Album, query.DurationMs, null)]);
 }

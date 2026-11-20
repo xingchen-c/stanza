@@ -99,6 +99,33 @@ public sealed class SqliteStorageTests(SqliteStorageFixture fixture)
     }
 
     [Fact]
+    public async Task 自动歌词缓存持久保存决策证据且兼容旧数组格式()
+    {
+        const string key = "sqlite-test:decision";
+        var candidate = new LyricCandidate("QQ", "QQ 音乐", "123", "唤归", "王子健/十八薰", "唤归", 226000, "Perfect");
+        var decision = new LyricsDecisionEvidence(2, "query-fingerprint", candidate);
+        ILyricsCacheStore cache = fixture.Cache;
+        await cache.PutDecisionAsync(key, LyricsLoadResult.Loaded, [new(0, "决策歌词")], decision);
+        var restarted = new SqliteLyricsCacheStore(fixture.Database);
+        var hit = await ((ILyricsCacheStore)restarted).GetAsync(key);
+        Assert.Equal(decision, hit!.Value.Decision);
+        Assert.Equal("决策歌词", hit.Value.Lines.Single().Text);
+
+        using var connection = fixture.Database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO lyrics_cache(key, status, last_used_utc_ms, payload)
+            VALUES('sqlite-test:legacy-array', $status, 0, '[{"StartTime":1000,"Text":"旧候选词"}]');
+            """;
+        command.Parameters.AddWithValue("$status", (int)LyricsLoadResult.Loaded);
+        command.ExecuteNonQuery();
+        var legacy = await cache.GetAsync("sqlite-test:legacy-array");
+        Assert.NotNull(legacy);
+        Assert.Equal("旧候选词", legacy.Value.Lines.Single().Text);
+        Assert.Null(legacy.Value.Decision);
+    }
+
+    [Fact]
     public void Open_connection_applies_per_connection_pragmas()
     {
         using var connection = fixture.Database.Open();

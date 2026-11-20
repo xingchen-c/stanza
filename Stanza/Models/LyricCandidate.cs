@@ -22,4 +22,10 @@ public sealed record LyricCandidate(
 
     /// <summary>true 表示与当前歌曲核心歌名一致，false 为其它搜索结果；旧版记录可能未标注。</summary>
     public bool? TitleMatched { get; init; }
+
+    /// <summary>已识别的 Live、伴奏、Remix 等版本标记是否一致。</summary>
+    public bool? VersionMatched { get; init; }
+
+    /// <summary>仅用于相近且版本一致的候选，不计入歌曲匹配分。</summary>
+    public bool PreferredSource { get; init; }
 }
