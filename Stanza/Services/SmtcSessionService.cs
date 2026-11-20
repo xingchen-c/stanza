@@ -503,7 +503,7 @@ public sealed class SmtcSessionService : IDisposable
         foreach (var delayMs in new[] { 150, 350, 800, 1500 })
         {
             await Task.Delay(delayMs);
-            if (generation != _coverRetryGeneration || _session is null)
+            if (generation != _coverRetryGeneration || !ReferenceEquals(session, _session) || _disposed)
                 return;
 
             try
@@ -514,6 +514,9 @@ public sealed class SmtcSessionService : IDisposable
             {
                 return;
             }
+
+            if (generation != _coverRetryGeneration || !ReferenceEquals(session, _session) || _disposed)
+                return;
 
             await _coverPipeline.RefreshAsync(
                 props,

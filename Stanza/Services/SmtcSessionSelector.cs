@@ -21,7 +21,6 @@ internal sealed class SmtcSessionSelector(Dispatcher dispatcher) : IDisposable
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private GlobalSystemMediaTransportControlsSessionManager? _manager;
     private GlobalSystemMediaTransportControlsSession? _session;
-    private string _selectedSessionId = string.Empty;
     private bool _lastSelectionWasEmpty;
 
     /// <summary>选中的会话变化；null 表示当前模式下没有可用会话。</summary>
@@ -99,7 +98,6 @@ internal sealed class SmtcSessionSelector(Dispatcher dispatcher) : IDisposable
 
         if (selectedIndex < 0)
         {
-            _selectedSessionId = string.Empty;
             DetachSession();
             if (!_lastSelectionWasEmpty)
             {
@@ -111,11 +109,10 @@ internal sealed class SmtcSessionSelector(Dispatcher dispatcher) : IDisposable
         }
 
         var selected = pairs[selectedIndex];
-        if (_selectedSessionId == selected.Descriptor.SessionId)
+        if (ReferenceEquals(_session, selected.Session))
             return;
 
         _lastSelectionWasEmpty = false;
-        _selectedSessionId = selected.Descriptor.SessionId;
         _session = selected.Session;
 
         var policy = PlaybackSourceRegistry.ResolveBySession(
