@@ -28,6 +28,7 @@ AppPublisher=Stanza
 DefaultDirName={autopf}\Stanza
 DefaultGroupName=Stanza
 UninstallDisplayIcon={app}\Stanza.exe
+SetupIconFile=Stanza\Assets\app.ico
 OutputDir={#PackageOutputDir}
 OutputBaseFilename={#PackageName}
 Compression=lzma2

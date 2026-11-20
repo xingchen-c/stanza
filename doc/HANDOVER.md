@@ -96,6 +96,7 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 
 ## 6. UI、封面与平台边界
 
+- 图标原图为 `Stanza/Assets/app.png`，`app.ico` 由原图生成，包含 16～256 像素共 9 档；托盘、EXE 与安装包共用此图标。WPF `Resource` 与 EXE 的 `ApplicationIcon` 需同时配置，开始菜单快捷方式从 EXE 读取图标。
 - 点击穿透由 `WindowInteropService` 按调整模式、穿透设置和光标是否位于媒体区域，动态切换 `WS_EX_TRANSPARENT`，保留 `WS_EX_NOACTIVATE`；不能用仅同线程转发的 `HTTRANSPARENT` 替代跨进程穿透。
 - 播放能力优先读取运行时 `PlaybackInfo.Controls`，读取失败才回退到策略能力。当前尚未实现主动 seek。
 - 应用清单声明 `PerMonitorV2`，任务栏与全屏判定使用物理像素，定位 WPF 窗口时才换为 DIP，避免混合缩放显示器上的坐标虚拟化。
