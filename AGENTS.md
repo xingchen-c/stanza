@@ -40,7 +40,7 @@ dotnet publish Stanza/Stanza.csproj -c Release --self-contained false -o ../dist
 ./scripts/Package.ps1 -Deployment All -Installer
 ```
 
-最近验证（2026-11-20，.NET 10 LTS，SDK 10.0.404）：真实仓库 Release solution 构建 0 警告、0 错误；真实源码 **233/233** 测试通过（包含统一候选、同平台偏好和时长归属回归；旧权重专属用例随实现退役），测试初始化器将数据隔离到独立临时目录，未替换日志实现。`v0.3.0` 已完成 GitHub 云端发布；本轮四种包在临时目录完成编译及 SHA256 检查，两种 ZIP 的运行时模式、压缩完整性、SQLite 和许可检查通过。安装器使用 Inno Setup 7.1.1 编译，未实际安装或启动应用，运行时缺失提示仍需人工验收。现有 `dist` 未覆盖；旧日志清理、滚动与退出 Flush 未做专项验收。详细边界见 `doc/README.md`。
+最近验证（2026-11-20，.NET 10 LTS，SDK 10.0.404）：真实仓库 Release solution 构建 0 警告、0 错误；真实源码 **238/238** 测试通过（包含统一候选、同平台偏好、时长归属和任务栏显示器保留回归；旧权重专属用例随实现退役），测试初始化器将数据隔离到独立临时目录，未替换日志实现。`v0.3.0` 已完成 GitHub 云端发布；本轮四种包在临时目录完成编译及 SHA256 检查，两种 ZIP 的运行时模式、压缩完整性、SQLite 和许可检查通过。安装器使用 Inno Setup 7.1.1 编译，未实际安装或启动应用，运行时缺失提示仍需人工验收。现有 `dist` 未覆盖；旧日志清理、滚动与退出 Flush 未做专项验收。详细边界见 `doc/README.md`。
 
 本机发布覆盖前先由用户退出 Stanza，不强杀、不自动启动 Debug 版；不要操控用户正在运行的播放器。自包含包、ZIP 和安装包不会随框架依赖发布自动更新，需单独授权与验证。`scripts/Package.ps1` 默认输出到 `../dist`，拒绝覆盖已有版本；验证时传临时 `-OutputDirectory`。发布标签必须为 `v<Version>`，可用 `-ReleaseTag` 检查名称；不自动打标签或推送。
 
@@ -125,7 +125,7 @@ App.OnStartup
 1. **`.slnx` 构建失败** → 改用 `.csproj`（见第 3 节）。
 2. **SMTC 的 `Position` 是快照，不是实时位置**：它是「`LastUpdatedTime` 时刻」的值，QQ 约每秒推一次。渲染位置通过 `SmtcSessionService.SamplePlayback()` 和 `PlaybackPositionTracker` 策略化合成。改时序逻辑前先读懂 `IPlaybackSourcePolicy` 的时间线策略和现有测试。
 3. **切歌 vs 拖动进度条**：位置大幅回退可能是拖动，须先确认歌曲 key 才切歌（`SmtcSessionService.SuspectTrackSwitch` / `PollForTrackConfirmationAsync`）。别把「位置回退」直接当切歌。
-4. **Win32 物理像素 vs WPF DIP**：任务栏矩形是物理像素，窗口定位是 DIP，需 `TransformFromDevice` 换算（`TaskbarService.ToDips`）。
+4. **Win32 物理像素 vs WPF DIP**：应用清单声明 `PerMonitorV2`，任务栏矩形是物理像素，窗口定位是 DIP，需 `TransformFromDevice` 换算（`TaskbarService.ToDips`）。
 5. **WPF Dispatcher**：SMTC 事件回调在后台线程，必须在 `SmtcSessionService` 中通过 `Dispatcher.BeginInvoke` 回到 UI 线程，再访问播放状态和 UI 事件。
 6. **静态与实例服务边界**：`AppLog`、`AppSettingsService` 保持静态；歌词缓存、选择记忆和 `LocalDatabase` 是实例对象，由 `AppServices` 持有。不要再新增全局静态存储。
 7. **数据目录统一由 `AppDataPaths` 解析**：启动前通过 `STANZA_DATA_DIR` 指定，未设置时默认 `%APPDATA%\Stanza`；内含 `settings.json` / `stanza.db` / `logs/`。Scoop 使用 `persist/stanza/data`。旧歌词 JSON 只在选定目录内迁移；仅默认目录模式保留 `%APPDATA%\FluentLyrics` 自动迁移。不要在业务服务中另写固定用户路径。

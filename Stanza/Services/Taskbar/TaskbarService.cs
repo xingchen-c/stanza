@@ -41,6 +41,7 @@ public sealed class TaskbarService : IDisposable
 
     // 当前选中的任务栏（组件所在的那条；组件暂隐时保留上次）
     private IntPtr _taskbarHwnd;
+    private IntPtr _taskbarMonitor;
     private PixelRect _taskbarRect;
     private bool _wasAnchorBased; // 上次有效区域是否来自锚点组件（决定组件暂隐时是否粘性保留）
 
@@ -167,6 +168,7 @@ public sealed class TaskbarService : IDisposable
             bool hasCardRegion;
             bool wasAnchorBased;
             IntPtr currentTaskbar;
+            IntPtr currentMonitor;
             lock (_sync)
             {
                 enabledKeys = _enabledKeys;
@@ -174,16 +176,18 @@ public sealed class TaskbarService : IDisposable
                 hasCardRegion = _hasCardRegion;
                 wasAnchorBased = _wasAnchorBased;
                 currentTaskbar = _taskbarHwnd;
+                currentMonitor = _taskbarMonitor;
             }
 
-            // 锚点优先；无锚点时沿用仍存在的任务栏，首次定位或原屏移除后优先主任务栏。
+            // 锚点优先；无锚点时沿用目标显示器，只有原屏断开才回退主任务栏。
             var chosen = IntPtr.Zero;
+            var chosenMonitor = IntPtr.Zero;
             PixelRect chosenRect = default;
             var chosenPrimary = true;
             PixelRect? widget = null;
             PixelRect? start = null;
 
-            var taskbars = TaskbarEnumerator.Enumerate(currentTaskbar);
+            var taskbars = TaskbarEnumerator.Enumerate(currentTaskbar, currentMonitor);
             foreach (var taskbar in taskbars)
             {
                 var hwnd = taskbar.Handle;
@@ -198,6 +202,7 @@ public sealed class TaskbarService : IDisposable
                 if (chosen == IntPtr.Zero)
                 {
                     chosen = hwnd;
+                    chosenMonitor = taskbar.Monitor;
                     chosenRect = tray;
                     chosenPrimary = taskbar.IsPrimary;
                     widget = detected;
@@ -207,6 +212,7 @@ public sealed class TaskbarService : IDisposable
                 if (detected is not null)
                 {
                     chosen = hwnd;
+                    chosenMonitor = taskbar.Monitor;
                     chosenRect = tray;
                     chosenPrimary = taskbar.IsPrimary;
                     widget = detected;
@@ -230,13 +236,14 @@ public sealed class TaskbarService : IDisposable
             {
                 // 锚点组件暂隐（暂停/切歌过渡）时保留上次选中的任务栏与卡片区域，避免卡片跳到别处
                 if (widget is null && hasCardRegion && wasAnchorBased &&
-                    taskbars.Any(t => t.Handle == currentTaskbar))
+                    taskbars.Any(t => t.Handle == currentTaskbar && t.Monitor == currentMonitor))
                 {
                     _isWidgetPresent = false;
                 }
                 else
                 {
                     _taskbarHwnd = chosen;
+                    _taskbarMonitor = chosenMonitor;
                     _taskbarRect = chosenRect;
                     _isPrimaryTaskbar = chosenPrimary;
 
@@ -271,8 +278,8 @@ public sealed class TaskbarService : IDisposable
                     _isWidgetPresent = widget is not null;
                 }
 
-                // 签名：任务栏句柄 + 矩形 + 卡片区域 + 组件显隐 + 白名单 + 放置方向
-                var signature = $"{_taskbarHwnd.ToInt64()}|{_taskbarRect.Left},{_taskbarRect.Top},{_taskbarRect.Right},{_taskbarRect.Bottom}|" +
+                // 签名：任务栏与显示器句柄 + 矩形 + 卡片区域 + 组件显隐 + 白名单 + 放置方向
+                var signature = $"{_taskbarHwnd.ToInt64()}|{_taskbarMonitor.ToInt64()}|{_taskbarRect.Left},{_taskbarRect.Top},{_taskbarRect.Right},{_taskbarRect.Bottom}|" +
                                 (_hasCardRegion
                                     ? $"{_cardRegion.Left},{_cardRegion.Top},{_cardRegion.Right},{_cardRegion.Bottom}"
                                     : "-") + "|" +
@@ -287,7 +294,8 @@ public sealed class TaskbarService : IDisposable
 
             if (changed)
             {
-                AppLog.Info($"任务栏定位更新: 任务栏=({_taskbarRect.Left},{_taskbarRect.Top},{_taskbarRect.Right},{_taskbarRect.Bottom}) " +
+                AppLog.Info($"任务栏定位更新: 窗口={_taskbarHwnd.ToInt64():X} 显示器={_taskbarMonitor.ToInt64():X} " +
+                            $"任务栏=({_taskbarRect.Left},{_taskbarRect.Top},{_taskbarRect.Right},{_taskbarRect.Bottom}) " +
                             $"卡片={(_hasCardRegion ? $"({_cardRegion.Left},{_cardRegion.Top},{_cardRegion.Right},{_cardRegion.Bottom})" : "无")} " +
                             $"组件可见={_isWidgetPresent} 白名单=[{string.Join(",", enabledKeys)}] 方向={placement}");
                 try

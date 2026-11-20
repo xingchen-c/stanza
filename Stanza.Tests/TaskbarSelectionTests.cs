@@ -7,8 +7,10 @@ namespace Stanza.Tests;
 
 public class TaskbarSelectionTests
 {
-    private static readonly TaskbarWindow Primary = new(new IntPtr(1), new PixelRect(0, 0, 3120, 72), true);
-    private static readonly TaskbarWindow Secondary = new(new IntPtr(2), new PixelRect(-3840, 0, 0, 72), false);
+    private static readonly IntPtr MainMonitor = new(101);
+    private static readonly IntPtr LeftMonitor = new(102);
+    private static readonly TaskbarWindow Primary = new(new IntPtr(1), new PixelRect(0, 0, 3120, 72), true, MainMonitor);
+    private static readonly TaskbarWindow Secondary = new(new IntPtr(2), new PixelRect(-2560, 0, 0, 48), false, LeftMonitor);
 
     [Fact]
     public void 首次定位不随枚举顺序选择副屏()
@@ -38,4 +40,40 @@ public class TaskbarSelectionTests
         Assert.Equal(Secondary, TaskbarEnumerator.OrderForSelection([another, Secondary], IntPtr.Zero)[0]);
         Assert.Equal(Secondary, TaskbarEnumerator.OrderForSelection([Secondary, another], IntPtr.Zero)[0]);
     }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void 开始菜单让目标任务栏暂时不被枚举时不改选另一屏(bool primaryTarget)
+    {
+        var target = primaryTarget ? Primary : Secondary;
+        var other = primaryTarget ? Secondary : Primary;
+        var selected = TaskbarEnumerator.OrderForSelection([other], target.Handle, target.Monitor, true);
+        Assert.Empty(selected);
+
+        Assert.Equal(target, TaskbarEnumerator.OrderForSelection(
+            [other, target], target.Handle, target.Monitor, true)[0]);
+    }
+
+    [Fact]
+    public void 同屏任务栏重建后沿用显示器而非旧句柄()
+    {
+        var replacement = Secondary with { Handle = new IntPtr(3) };
+        Assert.Equal(replacement, TaskbarEnumerator.OrderForSelection(
+            [Primary, replacement], Secondary.Handle, LeftMonitor, true)[0]);
+    }
+
+    [Fact]
+    public void 旧句柄出现在另一屏时仍优先原显示器()
+    {
+        var moved = Secondary with { Rect = Primary.Rect, Monitor = MainMonitor };
+        var replacement = Secondary with { Handle = new IntPtr(3) };
+        Assert.Equal(replacement, TaskbarEnumerator.OrderForSelection(
+            [moved, replacement], Secondary.Handle, LeftMonitor, true)[0]);
+    }
+
+    [Fact]
+    public void 原显示器确实断开后才回退到主任务栏()
+        => Assert.Equal(Primary, TaskbarEnumerator.OrderForSelection(
+            [Primary], Secondary.Handle, LeftMonitor, false)[0]);
 }
