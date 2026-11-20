@@ -88,7 +88,7 @@ public partial class MainWindow
             services.LyricsChoices);
         _clickThrough = _settings.ClickThrough;
         _showMediaControls = _settings.ShowMediaControls;
-        ApplyLyricBrushes();
+        ApplyLyricAppearance();
         AppLog.ApplyLevel(_settings.LogLevel);
         _smtc.SetMediaControlsEnabled(_showMediaControls);
 
@@ -809,17 +809,10 @@ public partial class MainWindow
         _taskbar.ApplySettings(_settings);
         _clickThrough = _settings.ClickThrough;
         _showMediaControls = _settings.ShowMediaControls;
-        ApplyLyricBrushes();
+        ApplyLyricAppearance();
         _wordBoundaryCache.Clear(); // 字号可能变化，逐字宽度缓存作废
         _lastClipWidth = -1;
         _animatedClipWidth = -1;
-        LyricTextShadow.FontSize = _settings.FontSize;
-        LyricTextBright.FontSize = _settings.FontSize;
-        LyricTextDim.FontSize = _settings.FontSize;
-        LyricTranslationShadow.FontSize = Math.Max(10, _settings.FontSize - 3);
-        LyricTranslation.FontSize = Math.Max(10, _settings.FontSize - 3);
-        LyricTextBright.Foreground = _lyricBrush;
-        LyricTextDim.Foreground = _lyricDimBrush;
 
         // 媒体区开关：通知服务（封面加载开关），UI 侧隐藏/恢复封面与按钮
         _smtc.SetMediaControlsEnabled(_showMediaControls);
@@ -847,9 +840,14 @@ public partial class MainWindow
         ApplyRenderMode(); // 兼容模式设置变化即时生效
     }
 
-    /// <summary>根据设置颜色生成亮/暗两色（供双层文本与状态文本使用）</summary>
-    private void ApplyLyricBrushes()
+    /// <summary>启动和修改设置时统一应用歌词字号与亮/暗两色。</summary>
+    private void ApplyLyricAppearance()
     {
+        LyricTextShadow.FontSize = _settings.FontSize;
+        LyricTextBright.FontSize = _settings.FontSize;
+        LyricTextDim.FontSize = _settings.FontSize;
+        LyricTranslationShadow.FontSize = Math.Max(10, _settings.FontSize - 3);
+        LyricTranslation.FontSize = Math.Max(10, _settings.FontSize - 3);
         var color = ParseColorValue(_settings.LyricColor);
         _lyricColor = color;
         _lyricDimColor = Color.FromArgb(110, color.R, color.G, color.B);
@@ -857,6 +855,8 @@ public partial class MainWindow
         _lyricBrush.Freeze();
         _lyricDimBrush = new SolidColorBrush(_lyricDimColor);
         _lyricDimBrush.Freeze();
+        LyricTextBright.Foreground = _lyricBrush;
+        LyricTextDim.Foreground = _lyricDimBrush;
     }
 
     private static Color ParseColorValue(string hex)
