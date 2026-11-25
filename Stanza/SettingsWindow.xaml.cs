@@ -6,23 +6,26 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Shapes;
-using Stanza.Models;
+using Stanza.Core.Models;
 using Stanza.Interop;
-using Stanza.Services;
 
 namespace Stanza;
 
 /// <summary>设置窗口：编辑并保存 AppSettings</summary>
-public partial class SettingsWindow
+public partial class SettingsWindow
 {
     // 保存设置时保留与界面无关的字段（如手动位置偏移），避免被默认值覆盖
+    private readonly ISettingsStore _settingsStore;
+    private readonly IAutoStart _autoStart;
     private readonly AppSettings _baseSettings;
     private readonly SettingsViewModel _viewModel;
 
     /// <summary>用当前设置初始化窗口，并把控件事件绑定到实时预览与保存流程。</summary>
-    public SettingsWindow(AppSettings settings)
+    public SettingsWindow(AppSettings settings, ISettingsStore settingsStore, IAutoStart autoStart)
     {
         InitializeComponent();
+        _settingsStore = settingsStore;
+        _autoStart = autoStart;
         SourceInitialized += (_, _) => TryEnableMica();
         _baseSettings = settings;
         _viewModel = SettingsViewModel.FromSettings(settings);
@@ -112,8 +115,8 @@ public partial class SettingsWindow
             return;
         }
 
-        AppSettingsService.Save(settings);
-        AppSettingsService.ApplyAutoStart(settings.AutoStart);
+        _settingsStore.Save(settings);
+        _autoStart.Apply(settings.AutoStart);
         Saved?.Invoke();
         Close();
     }

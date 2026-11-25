@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
-using Stanza.Models;
-using Stanza.Services.Lyrics;
+using Stanza.Core.Models;
+using Stanza.Core.Lyrics;
 using Stanza.Tests.TestDoubles;
 using Xunit;
 
@@ -198,7 +198,7 @@ public class LyricsRecoveryTests
             => Task.FromResult(new LyricsResult(LyricsLoadResult.Loaded, [new(0, "确定版本")]));
     }
 
-    private static LyricsCoordinator CreateCoordinator(
+    private static LyricsWorkflow CreateCoordinator(
         ILyricsProvider provider,
         Func<string> currentKey,
         int recoveryLifetimeMs,

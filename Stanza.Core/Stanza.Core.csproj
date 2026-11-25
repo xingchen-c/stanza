@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Lyricify.Lyrics.Helper" Version="0.2.0" />
+    <InternalsVisibleTo Include="Stanza" />
+    <InternalsVisibleTo Include="Stanza.Infrastructure" />
+    <InternalsVisibleTo Include="Stanza.Tests" />
+  </ItemGroup>
+</Project>

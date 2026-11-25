@@ -16,5 +16,6 @@ internal static class TestEnvironment
         Environment.SetEnvironmentVariable("STANZA_DATABASE_PATH", null);
         Environment.SetEnvironmentVariable("STANZA_LEGACY_LYRICS_CACHE_PATH", null);
         Environment.SetEnvironmentVariable("STANZA_LEGACY_CHOICE_PATH", null);
+        AppLog.BindCore();
     }
 }

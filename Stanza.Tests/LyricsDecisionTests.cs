@@ -1,6 +1,6 @@
-using Stanza.Models;
-using Stanza.Services;
-using Stanza.Services.Lyrics;
+using Stanza.Core.Models;
+
+using Stanza.Core.Lyrics;
 using Lyricify.Lyrics.Searchers.Helpers;
 using Xunit;
 
@@ -103,7 +103,7 @@ public class LyricsDecisionTests
     [InlineData("Generic", "tencent.qqmusic", "QQ")]
     [InlineData("Generic", "chrome.exe", null)]
     public void 播放来源偏好识别已知平台而不改变播放策略(string policy, string aumid, string? expected)
-        => Assert.Equal(expected, SmtcSessionService.PreferredLyricsSource(policy, aumid));
+        => Assert.Equal(expected, PlaybackWorkflow.PreferredLyricsSource(policy, aumid));
 
     [Fact]
     public async Task 唤归截图的双歌手同曲同秒数优先QQ()
@@ -213,12 +213,12 @@ public class LyricsDecisionTests
     [Fact]
     public void 自动决策缓存按时长专辑及播放平台区分且不读取旧普通key()
     {
-        var original = LyricsService.AutomaticCacheKey(Query);
+        var original = LyricsLoader.AutomaticCacheKey(Query);
         Assert.NotEqual(Query.Key, original);
-        Assert.NotEqual(original, LyricsService.AutomaticCacheKey(Query with { DurationMs = null }));
-        Assert.NotEqual(original, LyricsService.AutomaticCacheKey(Query with { Album = "另一张专辑" }));
-        Assert.NotEqual(original, LyricsService.AutomaticCacheKey(Query with { PreferredSourceKey = "NetEase" }));
-        Assert.Equal(original, LyricsService.AutomaticCacheKey(Query with { }));
+        Assert.NotEqual(original, LyricsLoader.AutomaticCacheKey(Query with { DurationMs = null }));
+        Assert.NotEqual(original, LyricsLoader.AutomaticCacheKey(Query with { Album = "另一张专辑" }));
+        Assert.NotEqual(original, LyricsLoader.AutomaticCacheKey(Query with { PreferredSourceKey = "NetEase" }));
+        Assert.Equal(original, LyricsLoader.AutomaticCacheKey(Query with { }));
     }
 
     internal static LyricCandidate Candidate(string source)

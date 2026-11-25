@@ -16,6 +16,7 @@ riderModule.iml
 /doc/*
 !/doc/README.md
 !/doc/HANDOVER.md
+!/doc/ARCHITECTURE.md
 !/doc/ROADMAP.md
 !/doc/MATCH-SCORING.md
 !/doc/SMTC-SOURCE-POLICY-IMPLEMENTATION-PLAN.md

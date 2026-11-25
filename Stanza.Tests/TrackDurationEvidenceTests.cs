@@ -1,4 +1,4 @@
-using Stanza.Services.Playback;
+using Stanza.Core.Playback;
 using Xunit;
 
 namespace Stanza.Tests;

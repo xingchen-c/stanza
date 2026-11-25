@@ -6,18 +6,19 @@
 
 | 文档 | 维护内容 | 何时阅读 |
 | --- | --- | --- |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | 目标架构、契约、迁移路径与验收 | 实施及评审本次重构 |
 | [HANDOVER.md](./HANDOVER.md) | 当前架构、数据流、关键回归约束与接手入口 | 首次接手或修改核心流程 |
 | [ROADMAP.md](./ROADMAP.md) | 产品方向、未完成项、优先级与不做清单 | 确定下一阶段范围 |
 | [MATCH-SCORING.md](./MATCH-SCORING.md) | 统一匹配、来源偏好、置信度、手选与决策缓存 | 修改搜词、排序或选词 |
 | [SMTC-SOURCE-POLICY-IMPLEMENTATION-PLAN.md](./SMTC-SOURCE-POLICY-IMPLEMENTATION-PLAN.md) | 当前播放源职责、QQ 时序、扩展边界与待办 | 修改播放器接入或播放时序 |
 | [SOFTWARE-RENDER-FALLBACK.md](./SOFTWARE-RENDER-FALLBACK.md) | 已实现的渲染降级与人工验收方法 | 修改兼容模式或渲染频率 |
 
-加上本索引，以上 **6 份文档随代码维护并纳入版本控制**。当前实现以代码和测试为准；路线和目标结构必须明确标为未实现。版本递增、标签及程序包命名约定见[根 README 的版本与发布约定](../README.md#版本与发布约定)，不在各文档重复维护应用版本号。
+加上本索引，以上 **7 份文档随代码维护并纳入版本控制**。当前实现以代码和测试为准；路线和目标结构必须明确标为未实现。版本递增、标签及程序包命名约定见[根 README 的版本与发布约定](../README.md#版本与发布约定)，不在各文档重复维护应用版本号。
 
 ## 当前实现摘要
 
-- 仅面向 Windows 11；主项目与测试目标为 `net10.0-windows10.0.22621.0`（.NET 10 LTS）；应用版本以 `Stanza/Stanza.csproj` 的 `<Version>` 为准，`global.json` 限定稳定版 10.0 SDK。
-- WPF 主界面，WinForms 仅用于托盘；`AppServices` 手动装配存储，无 DI 框架、无运行期插件。
+- 仅面向 Windows 11；Core 为 `net10.0`，平台、主项目与测试目标为 `net10.0-windows10.0.22621.0`（.NET 10 LTS）；应用版本以 `Stanza/Stanza.csproj` 的 `<Version>` 为准，`global.json` 限定稳定版 10.0 SDK。
+- Core / Infrastructure / WPF 三项目；Microsoft DI + Generic Host 显式装配，Command / Query + Handler / Context / Workflow，无运行期插件。播放独立采样，UI 只读完整快照。
 - 播放源与歌词源独立：QQ / 网易云 / Generic 播放策略已存在；QQ、网易云、LRCLIB 并行搜索候选，自动与手动共用 Lyricify 基线排序；统一置信判断后再串行按候选取词。
 - 同平台偏好只影响证据接近的同录音候选；不同版本或歌手不能靠来源放行，证据不足提示手选。自动缓存携带查询指纹和算法版本。
 - 当前优先稳定 QQ 主流程。网易云播放器策略保留，但暂停新增适配与完整实机验收；这不影响网易云歌词源作为兜底。
@@ -31,6 +32,8 @@
 - GitHub 发布工作流为 `v*` 标签触发：版本校验、构建、测试、ZIP/EXE 与各自 SHA256、创建 Release。`v0.3.0` 的自包含 ZIP 已完成云端发布；`0.3.1` 开始准备带/不带运行时的四种包。Gitee 附件同步与独立 Scoop bucket 更新不在应用工作流中。
 
 ## 最近验证基线
+
+2026-11-25 架构重构与测试审计修正：Release 解决方案构建 **0 警告、0 错误**，测试 **292/292**（保留原有 272 项，新增 20 项架构回归），`git diff --check` 通过。覆盖真实 DI / Dispatcher / 隔离存储及可控外部端口；公共匹配规则改测内核，补齐命令总线链路，快照回调只收集证据、测试内执行断言。三项临时破坏均被对应回归检出。未进行本次 QQ 与窗口实机验收；详见 [实施记录](./ARCHITECTURE.md#9-实施记录)。下表中更早的实网和发布验证不代表已在新架构上复验。
 
 2026-11-25，单曲纠错与既有 QQ 搜索召回、网易云纯音乐判定、歌手别名等修复一起重新构建和测试，使用 .NET SDK `10.0.404`。选词窗口等专项记录沿用 2026-11-20，打包和发布工作流记录沿用 2026-11-19，本次未生成或更新程序包。
 

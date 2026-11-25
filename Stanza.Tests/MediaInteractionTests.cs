@@ -1,5 +1,5 @@
-using Stanza.Models;
-using Stanza.Services.Desktop;
+using Stanza.Core.Models;
+using Stanza.Desktop;
 using Xunit;
 
 namespace Stanza.Tests;
@@ -20,19 +20,19 @@ public class MediaInteractionTests
         bool adjusting, bool clickThrough, bool mediaHit, bool transparent)
     {
         const long unrelatedFlags = 0x00080080;
-        var result = WindowInteropService.CalculateExtendedStyle(unrelatedFlags, adjusting, clickThrough, mediaHit);
+        var result = WindowInterop.CalculateExtendedStyle(unrelatedFlags, adjusting, clickThrough, mediaHit);
         Assert.Equal(transparent, (result & 0x20) != 0);
         Assert.Equal(unrelatedFlags, result & unrelatedFlags);
         Assert.NotEqual(0, result & 0x08000000);
-        Assert.Equal(result, WindowInteropService.CalculateExtendedStyle(result, adjusting, clickThrough, mediaHit));
+        Assert.Equal(result, WindowInterop.CalculateExtendedStyle(result, adjusting, clickThrough, mediaHit));
     }
 
     [Fact]
     public void ExtendedStyle_离开媒体区恢复穿透再次进入即清除()
     {
-        var outside = WindowInteropService.CalculateExtendedStyle(0, false, true, false);
-        var inside = WindowInteropService.CalculateExtendedStyle(outside, false, true, true);
-        var outsideAgain = WindowInteropService.CalculateExtendedStyle(inside, false, true, false);
+        var outside = WindowInterop.CalculateExtendedStyle(0, false, true, false);
+        var inside = WindowInterop.CalculateExtendedStyle(outside, false, true, true);
+        var outsideAgain = WindowInterop.CalculateExtendedStyle(inside, false, true, false);
         Assert.Equal(0, inside & 0x20);
         Assert.Equal(outside, outsideAgain);
     }

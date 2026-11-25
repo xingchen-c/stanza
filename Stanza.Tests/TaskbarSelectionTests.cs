@@ -1,7 +1,7 @@
-using Stanza.Models;
-using Stanza.Services.Taskbar;
+using Stanza.Core.Models;
+using Stanza.Desktop.Taskbar;
 using Xunit;
-using TaskbarWindow = Stanza.Services.Taskbar.TaskbarEnumerator.TaskbarWindow;
+using TaskbarWindow = Stanza.Desktop.Taskbar.TaskbarEnumerator.TaskbarWindow;
 
 namespace Stanza.Tests;
 

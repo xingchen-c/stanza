@@ -1,5 +1,5 @@
-using Stanza.Models;
-using Stanza.Services.Lyrics;
+using Stanza.Core.Models;
+using Stanza.Core.Lyrics;
 using Xunit;
 
 namespace Stanza.Tests;
@@ -14,7 +14,7 @@ public class LyricsSelectionTests
         var store = new Cache();
         var choices = new InMemoryLyricsChoiceStore();
         var provider = new Provider();
-        var coordinator = new LyricsCoordinator(store, choices, () => Query.Key, provider);
+        var coordinator = new LyricsWorkflow(store, choices, () => Query.Key, provider);
         var automatic = coordinator.LoadAsync(Query);
         await provider.AutoStarted.Task;
         var manual = coordinator.ApplyCandidateAsync(Query.Key, Candidate);
@@ -26,7 +26,7 @@ public class LyricsSelectionTests
         Assert.Equal("手选", store.Items[Query.Key].Lines.Single().Text);
 
         var offline = new Provider();
-        var restarted = new LyricsCoordinator(store, choices, () => Query.Key, offline);
+        var restarted = new LyricsWorkflow(store, choices, () => Query.Key, offline);
         Assert.Equal(LyricsLoadResult.Loaded, await restarted.LoadAsync(Query));
         Assert.Equal("手选", restarted.Lyrics.Lines.Single().Text);
         Assert.False(offline.AutoStarted.Task.IsCompleted);
@@ -41,7 +41,7 @@ public class LyricsSelectionTests
         var choices = new InMemoryLyricsChoiceStore();
         choices.Put(Query.Key, Candidate);
         var provider = new Provider();
-        var coordinator = new LyricsCoordinator(store, choices, () => Query.Key, provider);
+        var coordinator = new LyricsWorkflow(store, choices, () => Query.Key, provider);
 
         var load = coordinator.LoadAsync(Query);
         Assert.Equal(1, provider.CandidateLoads);
@@ -54,7 +54,7 @@ public class LyricsSelectionTests
         // 普通曲目缓存不能证明所属候选；离线重启必须读候选专用缓存。
         store.Items[Query.Key] = new(LyricsLoadResult.Loaded, [new(0, "仍不可信的自动词")]);
         var offline = new Provider();
-        var restarted = new LyricsCoordinator(store, choices, () => Query.Key, offline);
+        var restarted = new LyricsWorkflow(store, choices, () => Query.Key, offline);
         Assert.Equal(LyricsLoadResult.Loaded, await restarted.LoadAsync(Query).WaitAsync(TimeSpan.FromSeconds(2)));
         Assert.Equal("正确候选词", restarted.Lyrics.Lines.Single().Text);
         Assert.Equal(0, offline.CandidateLoads);
@@ -67,7 +67,7 @@ public class LyricsSelectionTests
         var store = new Cache();
         var choices = new InMemoryLyricsChoiceStore();
         var provider = new Provider();
-        var coordinator = new LyricsCoordinator(store, choices, () => Query.Key, provider);
+        var coordinator = new LyricsWorkflow(store, choices, () => Query.Key, provider);
         var statuses = new List<string>();
         var applied = 0;
         coordinator.StatusChanged += statuses.Add;
@@ -89,13 +89,13 @@ public class LyricsSelectionTests
     {
         var store = new Cache();
         var provider = new Provider();
-        var service = new LyricsService(store, provider);
+        var service = new LyricsLoader(store, provider);
         var load = service.LoadAsync(Query, service.Generation);
         await provider.AutoStarted.Task;
         service.InvalidateInFlight();
         provider.Auto.SetResult(Result("旧歌"));
         await load;
-        Assert.Equal("旧歌", store.Items[LyricsService.AutomaticCacheKey(Query)].Lines.Single().Text);
+        Assert.Equal("旧歌", store.Items[LyricsLoader.AutomaticCacheKey(Query)].Lines.Single().Text);
         Assert.Empty(service.Lines);
     }
 
@@ -103,9 +103,9 @@ public class LyricsSelectionTests
     public async Task 手选失败保留已有歌词且过期key不发起请求()
     {
         var store = new Cache();
-        store.Items[LyricsService.AutomaticCacheKey(Query)] = new LyricsCacheHit(LyricsLoadResult.Loaded, [new(0, "可用词")]);
+        store.Items[LyricsLoader.AutomaticCacheKey(Query)] = new LyricsCacheHit(LyricsLoadResult.Loaded, [new(0, "可用词")]);
         var provider = new Provider();
-        var coordinator = new LyricsCoordinator(store, new InMemoryLyricsChoiceStore(), () => Query.Key, provider);
+        var coordinator = new LyricsWorkflow(store, new InMemoryLyricsChoiceStore(), () => Query.Key, provider);
         await coordinator.LoadAsync(Query);
         Assert.False(await coordinator.ApplyCandidateAsync("旧key", Candidate));
         Assert.Equal(0, provider.CandidateLoads);
@@ -125,7 +125,7 @@ public class LyricsSelectionTests
         var store = new Cache();
         var choices = new InMemoryLyricsChoiceStore();
         var provider = new Provider();
-        var coordinator = new LyricsCoordinator(store, choices, () => Query.Key, provider);
+        var coordinator = new LyricsWorkflow(store, choices, () => Query.Key, provider);
         var applied = new List<LyricsLoadResult>();
         coordinator.ResultApplied += (_, result) => applied.Add(result);
         var automatic = coordinator.LoadAsync(Query);
@@ -151,7 +151,7 @@ public class LyricsSelectionTests
 
         await coordinator.RecoveryCompletion.WaitAsync(TimeSpan.FromSeconds(2));
         Assert.Equal("正常自动歌词", coordinator.Lyrics.Lines.Single().Text);
-        Assert.Equal("正常自动歌词", store.Items[LyricsService.AutomaticCacheKey(Query)].Lines.Single().Text);
+        Assert.Equal("正常自动歌词", store.Items[LyricsLoader.AutomaticCacheKey(Query)].Lines.Single().Text);
         Assert.False(choices.TryGet(Query.Key, out _));
         Assert.Equal([LyricsLoadResult.Loaded], applied);
     }
@@ -161,7 +161,7 @@ public class LyricsSelectionTests
     {
         var key = Query.Key;
         var provider = new Provider();
-        var coordinator = new LyricsCoordinator(new Cache(), new InMemoryLyricsChoiceStore(), () => key, provider);
+        var coordinator = new LyricsWorkflow(new Cache(), new InMemoryLyricsChoiceStore(), () => key, provider);
         var automatic = coordinator.LoadAsync(Query);
         var manual = coordinator.ApplyCandidateAsync(Query.Key, Candidate);
         key = "下一首";
@@ -178,7 +178,7 @@ public class LyricsSelectionTests
     public async Task 恢复探测挂起时手选成功不得再发布自动未找到()
     {
         var provider = new Provider();
-        var coordinator = new LyricsCoordinator(new Cache(), new InMemoryLyricsChoiceStore(), () => Query.Key, provider);
+        var coordinator = new LyricsWorkflow(new Cache(), new InMemoryLyricsChoiceStore(), () => Query.Key, provider);
         var probeEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var probe = new TaskCompletionSource<RecoveryProbe>(TaskCreationOptions.RunContinuationsAsynchronously);
         var statuses = new List<string>();
@@ -204,7 +204,7 @@ public class LyricsSelectionTests
     {
         var provider = new Provider();
         var store = new Cache();
-        var coordinator = new LyricsCoordinator(store, new InMemoryLyricsChoiceStore(), () => Query.Key, provider);
+        var coordinator = new LyricsWorkflow(store, new InMemoryLyricsChoiceStore(), () => Query.Key, provider);
         var statuses = new List<string>();
         coordinator.StatusChanged += statuses.Add;
         coordinator.ScheduleRecovery(Query.Key, Query, _ => Task.FromResult(RecoveryProbe.Ready(Query)));
@@ -223,7 +223,7 @@ public class LyricsSelectionTests
         var store = new Cache();
         var choices = new InMemoryLyricsChoiceStore();
         var provider = new Provider();
-        var coordinator = new LyricsCoordinator(store, choices, () => Query.Key, provider);
+        var coordinator = new LyricsWorkflow(store, choices, () => Query.Key, provider);
         var manual = coordinator.ApplyCandidateAsync(Query.Key, Candidate);
         provider.Manual.SetResult(new(LyricsLoadResult.Instrumental, []));
         Assert.True(await manual);
@@ -237,7 +237,7 @@ public class LyricsSelectionTests
         var provider = new SequentialProvider();
         var choices = new InMemoryLyricsChoiceStore();
         var store = new Cache();
-        var coordinator = new LyricsCoordinator(store, choices, () => Query.Key, provider);
+        var coordinator = new LyricsWorkflow(store, choices, () => Query.Key, provider);
         var first = coordinator.ApplyCandidateAsync(Query.Key, Candidate);
         var secondCandidate = Candidate with { Id = "2" };
         var second = coordinator.ApplyCandidateAsync(Query.Key, secondCandidate);

@@ -4,8 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using Windows.Media.Control;
-using Stanza.Models;
-using Stanza.Services;
+using Stanza.Core.Models;
 
 namespace Stanza;
 
@@ -112,10 +111,10 @@ public partial class MainWindow
     /// <summary>按连续进度右移亮色层的 Clip 右缘（0~1），只在明显变化时更新</summary>
     private void UpdateLyricProgress(int positionMs)
     {
-        if (_currentIndex < 0 || _currentIndex >= _smtc.Lyrics.Lines.Count)
+        if (_currentIndex < 0 || _currentIndex >= _snapshot.Lines.Count)
             return;
 
-        var line = _smtc.Lyrics.Lines[_currentIndex];
+        var line = _snapshot.Lines[_currentIndex];
         var width = LyricTextBright.ActualWidth;
         if (width <= 0)
             return;
@@ -290,7 +289,7 @@ public partial class MainWindow
     /// <summary>行的持续时间：优先取 EndTime，缺省时用下一行开始时间兜底</summary>
     private int GetLineDuration(int index)
     {
-        var lines = _smtc.Lyrics.Lines;
+        var lines = _snapshot.Lines;
         if (index < 0 || index >= lines.Count)
             return 0;
 

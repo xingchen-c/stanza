@@ -9,12 +9,12 @@
 
 - **定位**：任务栏上「歌词优先」的轻量叠加卡片；长期演进为「任务栏音乐中心」（见 `doc/ROADMAP.md` 的 A/B 形态）。
 - **唯一目标平台**：Windows 11（Windows 10 未实测）。
-- **明确不做**：亚克力/重动效、运行期动态插件、DI 框架、大规模分层重构（见 ROADMAP「不做清单」）。
+- **明确不做**：亚克力/重动效、运行期动态插件（见 ROADMAP「不做清单」）。
 
 ## 2. 技术栈与工程
 
 - .NET 10 LTS，`TargetFramework: net10.0-windows10.0.22621.0`；`global.json` 限定稳定版 10.0 SDK，允许同版本内的功能带与补丁升级
-- WPF（主界面）+ WinForms（仅托盘 `TrayIconService`）
+- WPF（主界面）+ WinForms（仅托盘 `TrayIcon`）
 - 主要第三方依赖：`Lyricify.Lyrics.Helper`（歌词搜索/解析/解密）、`Microsoft.Data.Sqlite`（缓存与选择记忆）、`Serilog` / 文件与异步 sink（日志）
 - 测试：xUnit 2.9 + Microsoft.NET.Test.Sdk
 - 打包：Inno Setup（`Stanza.iss`）
@@ -40,7 +40,7 @@ dotnet publish Stanza/Stanza.csproj -c Release --self-contained false -o ../dist
 ./scripts/Package.ps1 -Deployment All -Installer
 ```
 
-最近验证（2026-11-25，.NET 10 LTS，SDK 10.0.404）：真实仓库 Release solution 构建 0 警告、0 错误；真实源码 **272/272** 测试通过（新增 6 项单曲纠错回归，包含统一候选、搜索召回、歌手别名、纯音乐判定、同平台偏好、时长归属和任务栏显示器保留回归；旧权重专属用例随实现退役），测试初始化器将数据隔离到独立临时目录，未替换日志实现。选词窗口通过默认/最小尺寸离屏渲染与隔离事件验证，未启动主应用或访问播放器。`v0.3.0` 已完成 GitHub 云端发布；此前四种包在临时目录完成编译及 SHA256 检查，两种 ZIP 的运行时模式、压缩完整性、SQLite 和许可检查通过。安装器使用 Inno Setup 7.1.1 编译，未实际安装或启动应用，运行时缺失提示仍需人工验收。现有 `dist` 未覆盖；旧日志清理、滚动与退出 Flush 未做专项验收。详细边界见 `doc/README.md`。
+最近验证（2026-11-25，.NET 10 LTS，SDK 10.0.404）：真实仓库 Release solution 构建 0 警告、0 错误；真实源码 **292/292** 测试通过（原有 272 项及 20 项架构回归）。测试使用真实 DI、WPF Dispatcher 与隔离 SQLite；公共匹配规则直接验证内核，命令通过真实总线验证。临时副本分别移除旧会话检查、允许会话切换与曲目切换沿用可渲染位置，三项破坏均被对应回归检出。测试初始化器隔离数据目录，未替换日志实现。未启动主应用或访问真实播放器；本次 QQ、窗口、DPI、多屏、全屏与单实例实机验收仍待完成。现有 `dist` 未覆盖；旧日志清理、滚动与退出 Flush 未做专项验收。历史打包与发布验证边界见 `doc/README.md`。
 
 本机发布覆盖前先由用户退出 Stanza，不强杀、不自动启动 Debug 版；不要操控用户正在运行的播放器。自包含包、ZIP 和安装包不会随框架依赖发布自动更新，需单独授权与验证。`scripts/Package.ps1` 默认输出到 `../dist`，拒绝覆盖已有版本；验证时传临时 `-OutputDirectory`。发布标签必须为 `v<Version>`，可用 `-ReleaseTag` 检查名称；不自动打标签或推送。
 
@@ -48,69 +48,52 @@ dotnet publish Stanza/Stanza.csproj -c Release --self-contained false -o ../dist
 
 ## 4. 代码结构速查
 
-```
-Stanza/                         # 仓库根
-├── Stanza/                     # 主项目（WPF）
-│   ├── App.xaml(.cs)           # WPF 入口 + 组合根启动 + 单实例/异常/迁移
-│   ├── AppServices.cs          # 轻量组合根：数据库、歌词缓存、选择记忆
-│   ├── AppDataPaths.cs         # 统一解析外部指定或默认的数据目录
-│   ├── MainWindow.xaml(.cs)    # 窗口本体 + 事件中枢 + 显隐/穿透/定位（仍待继续拆分）
-│   ├── MainWindow.Rendering.cs # 卡拉OK渲染、逐字、跟随滚动、翻译
-│   ├── SettingsWindow / LyricsPickerWindow   # 设置窗口 / 候选选择窗口
-│   ├── SettingsViewModel.cs    # 设置草稿、校验、AppSettings 构造
-│   ├── Interop/NativeMethods.cs # 全项目 Win32/GDI/DWM P/Invoke 唯一入口
-│   ├── Models/                 # LyricLine、LyricCandidate、LyricsQuery、AppSettings、NowPlaying、TrackKey…
-│   └── Services/
-│       ├── SmtcSessionSelector.cs          # 管理器、会话枚举、来源筛选和最终选择（不转发媒体事件）
-│       ├── SmtcSessionService.cs           # 选中会话事件、播放状态、切歌、位置、歌词/封面编排
-│       ├── Desktop/                        # ForegroundFullscreenDetector / WindowInteropService
-│       ├── Storage/LocalDatabase.cs        # 实例化 SQLite 数据库
-│       ├── Playback/                       # 播放源策略、位置追踪、封面、能力
-│       │   ├── PlaybackCoverPipeline.cs
-│       │   ├── PlaybackPositionTracker.cs
-│       │   ├── TrackSwitchStateMachine.cs
-│       │   ├── PlaybackSourceSelector.cs / Registry.cs
-│       │   └── Policies/                   # QqMusic / NetEase / Generic
-│       ├── Lyrics/
-│       │   ├── ILyricsProvider / LyricsQuery
-│       │   ├── LyricsProviderChain.cs       # 多源搜索、统一候选决策与超时预算
-│       │   ├── LyricsMemoryCache.cs         # 最近歌词内存缓存
-│       │   ├── LyricsCoordinator.cs         # 加载、候选应用、未找到/歧义恢复
-│       │   ├── LyricsService.cs             # 当前歌词门面与按位置取行
-│       │   ├── SqliteLyricsCacheStore.cs / SqliteLyricsChoiceStore.cs
-│       │   └── QqMusic / Netease / Lrclib Providers
-│       ├── Taskbar/            # TaskbarService + Enumerator + LayoutCalculator + Locators
-│       ├── TrayIconService.cs  # 托盘图标 + 右键菜单
-│       ├── AppSettingsService.cs           # 设置 JSON 读写 + 开机自启（注册表）
-│       └── LogService.cs       # AppLog 日志
-├── Stanza.Tests/               # xUnit 测试（纯函数行为锁定）
-├── doc/                        # 设计文档（见末尾索引）
-├── Stanza.iss                  # Inno Setup 安装脚本
-└── README.md / LICENSE / THIRD-PARTY-NOTICES.md / .gitignore
+```text
+Stanza.Core/                    # net10.0；不引用 WPF / WinRT / SQLite / DI
+├── Models/                     # 曲目、歌词、选择上下文、设置值
+├── Playback/                   # PlaybackContext、请求身份、切歌和位置规则、来源策略
+├── Lyrics/                     # LyricsContext、LyricsLoader、候选决策、存储/词源契约
+├── Workflows/                  # Playback / Lyrics / Cover、独立采样与任务生命周期
+├── Messaging/                  # Command、Handler、总线契约
+├── ReadModels/                 # 只读快照、投影与 Query
+└── Ports/                      # 播放会话/网关、状态调度、设置与自启端口
+Stanza.Infrastructure/          # Windows / 网络 / 持久化
+├── Playback/                   # SmtcPlaybackGateway / SmtcPlaybackSession
+├── Lyrics/                     # QQ / 网易云 / LRCLIB 与存储实现
+├── Storage/                    # LocalDatabase、StorageBackend 整体降级
+├── Settings/                   # SettingsFile、WindowsAutoStart
+├── Diagnostics/                # AppLog 文件日志；绑定 Core 日志端口
+└── AppDataPaths.cs
+Stanza/                         # WPF 外壳
+├── Composition/                # Generic Host、显式 DI 注册、CommandBus、窗口工厂
+├── Presentation/               # CoverDecoder；主窗口与逐字渲染保留原文件
+├── Desktop/                    # 任务栏、托盘、全屏、窗口互操作
+├── Interop/NativeMethods.cs    # Win32 / GDI / DWM P/Invoke 统一入口
+└── MainWindow*.cs              # 交互与渲染，仅访问命令/查询契约
+Stanza.Tests/                   # 规则、流程、存储、真实 Dispatcher / DI 回归
+doc/ARCHITECTURE.md             # 目标、职责映射、时序、迁移和验收
 ```
 
 ## 5. 核心数据流（主链路）
 
-```
-App.OnStartup
-  → AppServices（LocalDatabase + SQLite repositories）
-  → StartupUri 创建 MainWindow
-    → MainWindow 构造（订阅事件、起 100ms ticker、起全屏检测定时器）
-    → OnLoaded → SmtcSessionService.InitializeAsync
-      → SmtcSessionSelector：GetSessions → PlaybackSourceSelector → SelectionChanged
-      → SmtcSessionService 直接订阅选中会话事件 → UpdateSession → RefreshTrackAsync
-        → LyricsCoordinator.LoadAsync → LyricsProviderChain（QQ / 网易云 / LRCLIB 搜索 → 统一排序/决策 → 按候选取词，先查缓存）
-      → TrackLyricsChanged 事件 → MainWindow 渲染
-    → OnTickerTick（每 100ms）
-      → SamplePlayback（策略化快照外推）→ GetLineIndexAt（二分取当前行）→ UpdateLyricProgress（卡拉OK裁剪）
+```text
+App.OnStartup → 数据迁移 / 异常兜底 / 单实例
+  → ApplicationHost.Build → 显式注册、ValidateScopes / ValidateOnBuild
+  → WindowFactory 创建主窗口并订阅 Query → Host.StartAsync → 显示窗口
+  → PlaybackRuntime → SMTC 通知 / 100ms 采样 → PlaybackWorkflow / PlaybackContext
+  → LyricsWorkflow / LyricsLoader / LyricsContext；CoverWorkflow
+  → NowPlayingProjection 发布完整快照 → UI Query / 渲染 ticker
+用户操作 → ICommandBus → 唯一 Handler → 状态或工作流 → 发布快照
+窗口关闭 → 取消窗口请求 / 停 UI ticker → Host.StopAsync
+  → 取消并等待工作流 / 停平台事件 → 释放 Host / 桌面资源 / Mutex / 日志
 ```
 
-歌词源注册顺序 = **QQ、网易云、LRCLIB**，仅作最终平局兜底；自动/手动共用统一排序和来源提示，显式装配在 `SmtcSessionService` 创建 `LyricsCoordinator` 的构造位置。
+歌词源在 `Composition/ApplicationHost` 依次注册 QQ、网易云、LRCLIB，顺序只作最终平局兜底。业务对象构造函数注入，禁止在 Handler / Workflow / UI 中解析容器。总线采用显式泛型注册，不反射扫描。
 
 ## 6. 关键架构约定（必须遵守）
 
-1. **无 DI 框架，但有组合根**：数据库和存储实例由 `AppServices` 创建；服务通过构造函数手动注入。**不要引入 `Microsoft.Extensions.DependencyInjection`**。
-2. **词源编译期扩展**：新词源 = 实现 `ILyricsProvider` + 注册进 `LyricsCoordinator` 的构造参数列表。注册顺序只作平局兜底，统一匹配及来源偏好由决策层处理。不做运行期动态加载 dll。
+1. **目标架构与 DI**：采用 Core / Infrastructure / WPF 外壳，Command / Query + Handler + Context + Workflow；Microsoft DI 与 Generic Host 仅在 `Composition` 装配和管理生命周期，业务对象使用构造函数注入。实施与验收依据 `doc/ARCHITECTURE.md`。
+2. **词源编译期扩展**：新词源 = 实现 `ILyricsProvider` + 在 `Composition/ApplicationHost` 注册为 `ILyricsProvider`。注册顺序只作平局兜底，统一匹配及来源偏好由决策层处理。不做运行期动态加载 dll。
 3. **播放源编译期扩展**：新播放器 = 实现 `IPlaybackSourcePolicy` + 提供对应 `IPlaybackSourceAdapter` + 注册进 `PlaybackSourceRegistry`。播放器来源与歌词来源是两条独立链路，禁止把两者耦合。新播放器策略必须先有实机 AUMID / 时间线数据；QQ 和网易云当前已经确认。
 4. **切歌状态机是最高危区域**：位置回退 vs 拖动进度条、暂停/恢复时序、快照外推，历史上反复回归。状态迁移已收进 `TrackSwitchStateMachine`，改动前必须先补/跑测试（`Stanza.Tests`）。
 5. **命名已定 Stanza**：勿改回 FluentLyrics。改名涉及 exe/程序集名、注册表自启键、单实例 Mutex、`%APPDATA%\Stanza` 目录与旧目录自动迁移。
@@ -118,16 +101,16 @@ App.OnStartup
 7. **日志用 `AppLog`**（不用 `Console`/`Debug`）：Release 默认 `Info` 级，DEBUG 全量。关键决策打 `Info`，诊断打 `Debug`。
 8. **防御式编程**：歌词接口 / 系统 API 普遍 `try/catch` 静默降级，失败不能影响主流程（卡片常驻）。
 9. **现代 C# 语法**：可用 primary constructor、集合表达式 `[]`、target-typed `new()`、`record`、可空引用类型。
-10. **测试友好**：核心纯逻辑标 `internal static`，主项目 `InternalsVisibleTo("Stanza.Tests")`，用历史真实歌名/时长钉死行为。
+10. **测试友好**：核心纯逻辑标 `internal static`，各项目通过 `InternalsVisibleTo("Stanza.Tests")` 开放内部契约，用历史真实歌名/时长钉死行为。
 
 ## 7. 易踩的坑
 
 1. **`.slnx` 构建失败** → 改用 `.csproj`（见第 3 节）。
-2. **SMTC 的 `Position` 是快照，不是实时位置**：它是「`LastUpdatedTime` 时刻」的值，QQ 约每秒推一次。渲染位置通过 `SmtcSessionService.SamplePlayback()` 和 `PlaybackPositionTracker` 策略化合成。改时序逻辑前先读懂 `IPlaybackSourcePolicy` 的时间线策略和现有测试。
-3. **切歌 vs 拖动进度条**：位置大幅回退可能是拖动，须先确认歌曲 key 才切歌（`SmtcSessionService.SuspectTrackSwitch` / `PollForTrackConfirmationAsync`）。别把「位置回退」直接当切歌。
-4. **Win32 物理像素 vs WPF DIP**：应用清单声明 `PerMonitorV2`，任务栏矩形是物理像素，窗口定位是 DIP，需 `TransformFromDevice` 换算（`TaskbarService.ToDips`）。
-5. **WPF Dispatcher**：SMTC 事件回调在后台线程，必须在 `SmtcSessionService` 中通过 `Dispatcher.BeginInvoke` 回到 UI 线程，再访问播放状态和 UI 事件。
-6. **静态与实例服务边界**：`AppLog`、`AppSettingsService` 保持静态；歌词缓存、选择记忆和 `LocalDatabase` 是实例对象，由 `AppServices` 持有。不要再新增全局静态存储。
+2. **SMTC 的 `Position` 是快照，不是实时位置**：它是「`LastUpdatedTime` 时刻」的值，QQ 约每秒推一次。`PlaybackRuntime` 独立驱动采样，由 `PlaybackPositionTracker` 合成后写入快照；UI ticker 不推进业务状态。改时序逻辑前先读懂 `IPlaybackSourcePolicy` 的时间线策略和现有测试。
+3. **切歌 vs 拖动进度条**：位置大幅回退可能是拖动，须先确认歌曲 key 才切歌（`PlaybackWorkflow.SuspectTrackSwitch` / `PollForTrackConfirmationAsync`）。别把「位置回退」直接当切歌。
+4. **Win32 物理像素 vs WPF DIP**：应用清单声明 `PerMonitorV2`，任务栏矩形是物理像素，窗口定位是 DIP，需 `TransformFromDevice` 换算（`TaskbarMonitor.ToDips`）。
+5. **WPF Dispatcher**：SMTC 事件回调在后台线程，必须通过 `IStateDispatcher` 回到串行状态上下文；WPF 实现是 `WpfStateDispatcher`。不要持有串行锁等待网络。
+6. **实例和生命周期边界**：状态、工作流、存储为 Singleton，Handler 为 Transient；设置使用 `ISettingsStore` / `IAutoStart`，日志保留 `AppLog` 门面。不要从根容器反复解析 disposable 窗口，不新增全局静态存储。
 7. **数据目录统一由 `AppDataPaths` 解析**：启动前通过 `STANZA_DATA_DIR` 指定，未设置时默认 `%APPDATA%\Stanza`；内含 `settings.json` / `stanza.db` / `logs/`。Scoop 使用 `persist/stanza/data`。旧歌词 JSON 只在选定目录内迁移；仅默认目录模式保留 `%APPDATA%\FluentLyrics` 自动迁移。不要在业务服务中另写固定用户路径。
 8. **歌词统一决策**：只并行搜索候选，统一 Lyricify 比较后按候选取词；同平台偏好不增加匹配分，版本冲突或证据不足不能自动放行。禁止多个 `LoadAsync` 并行抢答；规则及实网校准边界见 `doc/MATCH-SCORING.md`。
 9. **请求身份各有职责**：媒体请求的会话 epoch / 序号、曲目 revision、歌词 generation 不能互相替代。选词贯穿使用 `LyricsSelectionContext`，手选成功后不能被同曲自动晚到覆盖；关键回归约束见 `doc/HANDOVER.md`。
@@ -135,10 +118,11 @@ App.OnStartup
 
 ## 8. 文档索引
 
-仓库根 README 是用户入口；`doc/` 下的 6 份开发文档纳入版本控制，和代码同步维护：
+仓库根 README 是用户入口；`doc/` 下的 7 份开发文档纳入版本控制，和代码同步维护：
 
 - `README.md` — 功能 / 安装 / 构建（仓库根的用户文档）
 - `doc/README.md` — 开发文档总索引、当前状态、验证基线与公开范围
+- `doc/ARCHITECTURE.md` — 本次重构的目标、契约、时序、迁移与验收
 - `doc/HANDOVER.md` — 当前架构、职责、关键回归约束与接手顺序（改核心流程前必读）
 - `doc/ROADMAP.md` — 方向、未完成项、优先级与**不做清单**（动架构前必读）
 - `doc/SMTC-SOURCE-POLICY-IMPLEMENTATION-PLAN.md` — 当前播放源策略、QQ 时序参数、扩展边界与待办

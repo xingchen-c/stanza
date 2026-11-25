@@ -1,7 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
-using Stanza.Models;
-using Stanza.Services.Lyrics;
+using Stanza.Core.Models;
+using Stanza.Core.Lyrics;
 
 namespace Stanza;
 
@@ -12,7 +12,7 @@ public partial class LyricsPickerWindow : Window
     private readonly Func<LyricsSelectionContext, CancellationToken, Task<IReadOnlyList<LyricCandidate>>> _search;
     private readonly Func<LyricsSelectionContext, LyricCandidate, CancellationToken, Task<bool>> _apply;
     private readonly Func<LyricsSelectionContext, bool> _isCurrent;
-    private readonly Func<LyricsSelectionContext, int, bool> _setOffset;
+    private readonly Func<LyricsSelectionContext, int, CancellationToken, Task<bool>> _setOffset;
     private readonly Func<LyricsSelectionContext, CancellationToken, Task<bool>> _restoreAutomatic;
     private int _offsetMs;
     private readonly CancellationTokenSource _cancellation = new();
@@ -28,7 +28,7 @@ public partial class LyricsPickerWindow : Window
         Func<LyricsSelectionContext, LyricCandidate, CancellationToken, Task<bool>> apply,
         Func<LyricsSelectionContext, bool> isCurrent,
         int offsetMs,
-        Func<LyricsSelectionContext, int, bool> setOffset,
+        Func<LyricsSelectionContext, int, CancellationToken, Task<bool>> setOffset,
         Func<LyricsSelectionContext, CancellationToken, Task<bool>> restoreAutomatic)
     {
         InitializeComponent();
@@ -204,12 +204,15 @@ public partial class LyricsPickerWindow : Window
         }
     }
 
-    private void ChangeOffset(int offsetMs)
+    private async Task ChangeOffsetAsync(int offsetMs)
     {
         RefreshTrackContext();
         if (_closed || _stale)
             return;
-        if (_setOffset(_context, offsetMs))
+        var saved = await _setOffset(_context, offsetMs, _cancellation.Token);
+        if (_closed || _stale)
+            return;
+        if (saved)
         {
             _offsetMs = offsetMs;
             OffsetStatusText.Text = "";
@@ -223,9 +226,9 @@ public partial class LyricsPickerWindow : Window
         }
     }
 
-    private void Delay_Click(object sender, RoutedEventArgs e) => ChangeOffset(_offsetMs - 100);
-    private void Advance_Click(object sender, RoutedEventArgs e) => ChangeOffset(_offsetMs + 100);
-    private void ResetOffset_Click(object sender, RoutedEventArgs e) => ChangeOffset(0);
+    private async void Delay_Click(object sender, RoutedEventArgs e) => await ChangeOffsetAsync(_offsetMs - 100);
+    private async void Advance_Click(object sender, RoutedEventArgs e) => await ChangeOffsetAsync(_offsetMs + 100);
+    private async void ResetOffset_Click(object sender, RoutedEventArgs e) => await ChangeOffsetAsync(0);
 
     private async void RestoreAutomatic_Click(object sender, RoutedEventArgs e)
     {

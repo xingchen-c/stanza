@@ -3,8 +3,8 @@ using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using Lyricify.Lyrics.Providers.Web;
-using Stanza.Models;
-using Stanza.Services.Lyrics;
+using Stanza.Core.Models;
+using Stanza.Core.Lyrics;
 using Xunit;
 
 namespace Stanza.Tests;

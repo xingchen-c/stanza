@@ -1,4 +1,4 @@
-using Stanza.Models;
+using Stanza.Core.Models;
 using Xunit;
 
 namespace Stanza.Tests;

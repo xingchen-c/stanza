@@ -1,6 +1,6 @@
 # 歌词候选匹配、手选与缓存
 
-> 最近核对：2026-11-24。统一决策已实现；实网准确率与等待时间仍需验收。源码主要位于 `Stanza/Services/Lyrics/`，人工列表过滤位于 `Stanza/LyricsPickerWindow.xaml.cs`。
+> 最近核对：2026-11-24。统一决策已实现；实网准确率与等待时间仍需验收。决策源码位于 `Stanza.Core/Lyrics/`，词源实现位于 `Stanza.Infrastructure/Lyrics/`，人工列表过滤位于 `Stanza/LyricsPickerWindow.xaml.cs`。
 
 ## 1. 当前范围
 

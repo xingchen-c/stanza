@@ -9,18 +9,16 @@
         <UseWindowsForms>true</UseWindowsForms>
         <ApplicationIcon>Assets\app.ico</ApplicationIcon>
         <ApplicationManifest>app.manifest</ApplicationManifest>
-        <Version>0.4.0</Version>
+        <Version>0.5.0</Version>
         <!-- 桌面小工具用 Workstation GC：22 核机器上 Server GC 会预分配大量堆内存（实测 800MB+），
              工作站 GC 完全够用且内存占用低一个量级 -->
         <ServerGarbageCollection>false</ServerGarbageCollection>
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Lyricify.Lyrics.Helper" Version="0.2.0"/>
-        <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12"/>
-        <PackageReference Include="Serilog" Version="4.*"/>
-        <PackageReference Include="Serilog.Sinks.File" Version="7.*"/>
-        <PackageReference Include="Serilog.Sinks.Async" Version="2.*"/>
+        <ProjectReference Include="..\Stanza.Core\Stanza.Core.csproj" />
+        <ProjectReference Include="..\Stanza.Infrastructure\Stanza.Infrastructure.csproj" />
+        <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
         <Resource Include="Assets\app.ico"/>
 
         <!-- WinForms 只用于托盘；去掉它带来的隐式 using，避免与 WPF 的 Application/Point 等撞名 -->

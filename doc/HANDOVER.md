@@ -1,6 +1,6 @@
 # Stanza 当前架构与维护交接
 
-> 最近核对：2026-11-20。本文描述现行职责与维护约束，不保存某次机器路径、分支、HEAD 或脏工作区快照。验证结果统一见 [文档索引](./README.md#最近验证基线)。
+> 最近核对：2026-11-25。本文描述现行职责与维护约束，不保存某次机器路径、分支、HEAD 或脏工作区快照。验证结果统一见 [文档索引](./README.md#最近验证基线)。
 
 ## 1. 接手入口
 
@@ -9,52 +9,37 @@ Stanza 是 Windows 11 任务栏上的轻量歌词小组件，基于 SMTC 获取�
 - .NET 10 LTS / WPF；WinForms 只用于托盘。目标框架为 `net10.0-windows10.0.22621.0`；`global.json` 限定稳定版 10.0 SDK，不跨主版本滚动。
 - 当前优先维护 QQ 音乐主流程；网易云播放策略保留，新增适配暂缓。
 - 播放器来源与歌词来源相互独立；QQ 播放器也可以使用网易云或 LRCLIB 的歌词。
-- 无 DI 框架、无动态插件；优先小步原地演进，不重写整个仓库。
+- Core / Infrastructure / WPF 三项目；Microsoft DI + Generic Host、Command / Query + Handler / Context / Workflow，目标与验收见 [架构实施文档](./ARCHITECTURE.md)。无运行期插件。
 
 接手前先看根目录 `AGENTS.md`、本文件和对应专题文档，再检查 `git status --short` 与 diff。不能假设提交已经包含用户工作区中的改动，也不能回退不属于自己的修改。
 
 ## 2. 目录与职责
 
-路径均相对仓库根：
+路径相对仓库根，完整规则见根 `AGENTS.md`：
 
 | 位置 | 当前职责 |
 | --- | --- |
-| `Stanza/App.xaml.cs` | 启动、旧数据目录迁移、单实例、异常兜底 |
-| `Stanza/AppServices.cs` | 创建数据库、缓存、选择记忆和单曲偏移；数据库不可用时回退内存实现 |
-| `Stanza/Models/` | `NowPlaying`、`LyricsQuery`、`LyricsSelectionContext`、歌词行、候选与设置 |
-| `Stanza/Services/SmtcSessionSelector.cs` | SMTC 管理器、会话枚举、来源筛选和选择；不转发媒体事件 |
-| `Stanza/Services/SmtcSessionService.cs` | 直接订阅选中会话；编排播放状态、曲目、歌词、封面与控制 |
-| `Stanza/Services/Playback/` | 来源策略/适配器、位置追踪、切歌 FSM、能力与封面管线 |
-| `Stanza/Services/Lyrics/` | 提供器、统一排序/决策、缓存门面、手选与未找到/歧义恢复 |
-| `Stanza/Services/Storage/` | 实例化 SQLite 数据库 |
-| `Stanza/Services/Desktop/` | 全屏检测、窗口样式与光标互操作 |
-| `Stanza/Services/Taskbar/` | 任务栏枚举、布局、锚点与独立定位 |
-| `Stanza/Interop/NativeMethods.cs` | Win32 / GDI / DWM P/Invoke 入口 |
-| `Stanza/MainWindow.xaml.cs` | 窗口事件中枢、显隐、定位、交互及渲染驱动，仍较重 |
-| `Stanza/MainWindow.Rendering.cs` | 逐字裁剪、翻译、长歌词跟随滚动 |
-| `Stanza/LyricsPickerWindow.xaml(.cs)` | 异步候选选择、取消/重搜、单曲偏移、恢复自动匹配与曲目上下文失效 |
-| `Stanza/SettingsWindow.xaml(.cs)` / `SettingsViewModel.cs` | 设置界面、草稿、校验与保存 |
-| `Stanza.Tests/` | 匹配、播放纯逻辑、请求身份、歌词并发、设置与存储测试 |
+| `Stanza/Composition/` | Host、显式 DI、命令分发、Dispatcher 适配与窗口工厂 |
+| `Stanza/MainWindow*.cs` | 交互、布局、逐字渲染；通过 ICommandBus / INowPlayingQueries 访问业务 |
+| `Stanza/Desktop/` | 任务栏枚举/布局、托盘、全屏检测、窗口互操作 |
+| `Stanza/Presentation/CoverDecoder.cs` | GDI+ 容错解码、缩放、转 WPF 图像并冻结 |
+| `Stanza.Core/Playback/` | 播放状态、请求身份、切歌 FSM、位置与时长规则、来源策略 |
+| `Stanza.Core/Lyrics/` | 歌词上下文、加载/缓存流程、统一候选决策、词源与存储契约 |
+| `Stanza.Core/Workflows/` | 播放/歌词/封面编排，独立运行循环与应用任务集合 |
+| `Stanza.Core/Messaging/` | Command、Handler 与总线接口，不依赖 DI |
+| `Stanza.Core/ReadModels/` | 不可变显示快照、投影与 Query |
+| `Stanza.Infrastructure/` | SMTC 会话、QQ/网易云/LRCLIB、SQLite、设置文件、自启和日志 |
 
-解决方案当前只有主项目和测试项目，尚未抽出 `Stanza.Core`。未来结构不应被描述成已经存在。
+通用 `Services` 层以及 `SmtcSessionService`、`LyricsService`、`LyricsCoordinator`、`AppServices` 已移除。状态分别由 PlaybackContext 和 LyricsContext 唯一拥有；Workflow 不复制第二套状态。Core 使用 net10.0，不引用 Windows UI / WinRT / SQLite / Host / DI。
 
 ## 3. 启动与运行链路
 
-```text
-App.OnStartup → AppServices → MainWindow
-  → SmtcSessionService.InitializeAsync
-  → SmtcSessionSelector 枚举 / 筛选 / 选择
-  → SmtcSessionService 订阅选中会话的媒体 / 时间线 / 播放状态事件
-  → 来源策略规范化元数据 → NowPlaying / LyricsQuery
-  → LyricsCoordinator → 选择记忆 / 缓存 / LyricsProviderChain
-  → UI 事件 → MainWindow.Rendering
-
-Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
-```
-
-- SMTC 回调需通过 Dispatcher 回到 UI 线程，再访问播放状态与 UI 事件。
-- ticker 正常为 `100ms`，降级模式为 `250ms`；现已常驻驱动交互采样，没有会话时不做播放采样，避免按钮穿透状态无法恢复。
-- `MainWindow` 不再直接读取原始 SMTC 会话，位置统一由 `SamplePlayback()` 提供。
+1. `App.OnStartup` 保留旧目录迁移、全局异常和单实例保护，然后建立 Generic Host；不使用 StartupUri。
+2. 窗口工厂创建主窗口并订阅 Query，启动 Host 后显示。存储初始化失败由 StorageBackend 将三种存储整体降级到内存。
+3. PlaybackRuntime 独立驱动 100ms 播放采样和每秒会话刷新。平台观察经 IStateDispatcher 串行应用，网络等待不阻塞后续状态操作。
+4. 用户操作经 ICommandBus 到唯一 Handler；播放、歌词、封面结果分别按所属请求身份应用。
+5. NowPlayingProjection 发布完整快照。UI ticker 只读位置/歌词，叠加全局与单曲偏移后渲染；软件渲染的 250ms 降频只影响 UI。
+6. 关闭先取消窗口请求、停止 UI ticker，再取消并等待命令、查询、恢复、封面等应用任务；Host 停止后关闭主窗口、释放托盘/任务栏、Mutex 并冲刷日志。不在 Dispatcher 上同步等待异步退出。
 
 ## 4. 请求身份与歌词一致性
 
@@ -62,7 +47,7 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 
 1. `MediaRequestIdentity` 的会话 epoch / 元数据序号：拦截旧会话或旧媒体请求回包。
 2. 曲目 `Revision`：固定选择窗口打开时的歌曲身份；A → B → A 后，原 A 窗口也不能继续应用。
-3. `LyricsService.Generation`：作废在飞歌词请求，防迟到结果污染显示、状态和手选结果。
+3. `LyricsContext.Generation`：作废在飞歌词请求，防迟到结果污染显示、状态和手选结果。
 
 `LyricsSelectionContext(LyricsQuery Query, long Revision)` 贯穿候选搜索与应用。搜索开始、返回和应用阶段均需检查上下文，不能在应用时临时读取当前曲目并把旧候选绑定过去。
 
@@ -72,7 +57,7 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 
 「恢复本曲自动匹配」移除当前曲目的手选记忆，开启新 generation，并串行删除当前查询的内存/SQLite 自动缓存后重新加载。清除排在已开始的缓存写入之后；同曲旧请求不能回写选择记忆或自动缓存。关闭选择窗口后，已接受的清除继续完成，必要时恢复同曲后台加载。
 
-本曲偏移按 `TrackKey` 保存，在服务入口校验曲目 revision 和 ±10 秒范围。渲染时叠加全局偏移与单曲偏移，不改变播放器位置；切歌后读取新歌偏移。
+本曲偏移按 `TrackKey` 保存，在 Command Handler 入口校验曲目 revision 和 ±10 秒范围。渲染时叠加全局偏移与单曲偏移，不改变播放器位置；切歌后读取新歌偏移。
 
 ## 5. 必须保留的回归约束
 
@@ -102,13 +87,13 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 ## 6. UI、封面与平台边界
 
 - 图标原图为 `Stanza/Assets/app.png`，`app.ico` 由原图生成，包含 16～256 像素共 9 档；托盘、EXE 与安装包共用此图标。WPF `Resource` 与 EXE 的 `ApplicationIcon` 需同时配置，开始菜单快捷方式从 EXE 读取图标。
-- 点击穿透由 `WindowInteropService` 按调整模式、穿透设置和光标是否位于媒体区域，动态切换 `WS_EX_TRANSPARENT`，保留 `WS_EX_NOACTIVATE`；不能用仅同线程转发的 `HTTRANSPARENT` 替代跨进程穿透。
+- 点击穿透由 `WindowInterop` 按调整模式、穿透设置和光标是否位于媒体区域，动态切换 `WS_EX_TRANSPARENT`，保留 `WS_EX_NOACTIVATE`；不能用仅同线程转发的 `HTTRANSPARENT` 替代跨进程穿透。
 - 播放能力优先读取运行时 `PlaybackInfo.Controls`，读取失败才回退到策略能力。当前尚未实现主动 seek。
 - 应用清单声明 `PerMonitorV2`，任务栏与全屏判定使用物理像素，定位 WPF 窗口时才换为 DIP，避免混合缩放显示器上的坐标虚拟化。
 - 无锚点时沿用已定位的显示器；开始菜单可使该屏任务栏暂时不被枚举，此时保留缓存位置，同屏任务栏重建后重新绑定句柄，仅显示器确实断开才回退。任务栏定位日志同时记录窗口与显示器句柄。保存的歌词字号与颜色在启动和设置应用时共用同一入口。
 - 全屏检测用选中任务栏定位显示器，再比较前台窗口的 DWM 可见边界；读取失败回退 `GetWindowRect`。开始菜单、搜索和 Shell 宿主被排除，Explorer 文件窗口 F11 全屏保留。
 - 显示入口统一遵守手动隐藏、全屏与播放状态；退出全屏时，调整位置模式也应恢复可见，不重新移动用户正在拖动的位置。真实窗口显隐仍需人工验收。
-- 封面适配器决定读取和替换策略，`PlaybackCoverPipeline` 负责过期结果、去重、解码与发布。QQ / Generic 接受首张稳定图，网易云允许有限窗口内替换迟到图。
+- 封面适配器决定读取和替换策略，`CoverWorkflow` 负责过期结果、重试和去重，展示层 `CoverDecoder` 解码。QQ / Generic 接受首张稳定图，网易云允许有限窗口内替换迟到图。
 - 会话选择按实际 SMTC 对象去重，不能用 AUMID 与枚举下标判断对象是否替换；封面重读在异步返回后再次核对重试世代、会话和释放状态。
 - 封面保留 GDI+ 容错解码，转 WPF 图像后冻结；不要轻易退回直接 `BitmapImage` 读取，历史上遇过 JPEG / ICC 失败。
 - 软件渲染三项降级见 [兼容文档](./SOFTWARE-RENDER-FALLBACK.md)，不要改成移除透明分层窗口。
@@ -117,8 +102,8 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 
 用户数据由 `AppDataPaths` 统一定位：启动前设置 `STANZA_DATA_DIR`，未设置时默认 `%APPDATA%\Stanza`；内含 `settings.json`、`stanza.db`、`logs/`。Scoop 清单通过 `persist` 和 `env_set` 指向 `persist/stanza/data`。旧 JSON 只在选定目录内迁移；外部指定目录不会隐式导入 AppData，默认模式保留旧 FluentLyrics 目录迁移。
 
-- `LocalDatabase`、缓存、选择记忆和单曲偏移是实例对象，由 `AppServices` 持有；不要新增全局静态存储。
-- `AppLog` 与 `AppSettingsService` 保持静态。日志用 `AppLog`，关键决策 Info、诊断 Debug。
+- `LocalDatabase`、缓存、选择记忆和单曲偏移是实例对象，由 DI 的 Singleton 注册与 `StorageBackend` 创建；不要新增全局静态存储。
+- 设置文件通过实例 `ISettingsStore`，自启通过 `IAutoStart`；日志保留 `AppLog` 门面并绑定 Core 日志端口，关键决策 Info、诊断 Debug。
 - SQLite 共用 `lyrics_cache` / `lyrics_choice` / `lyrics_offset`，WAL；`synchronous=NORMAL` 和 `busy_timeout=3000` 需在连接层正确应用。
 - `lyrics_offset` 是用户配置，不随清缓存或选择记忆淘汰；归零时删除对应记录。启动读入内存，ticker 不做数据库 IO；数据库不可用时仅保留本次运行的偏移。
 - 自动缓存按算法版本和查询指纹区分，并存储候选决策证据；手选使用候选专用缓存，旧普通缓存不混用，详见 [匹配文档](./MATCH-SCORING.md)。

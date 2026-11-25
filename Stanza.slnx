@@ -1,4 +1,6 @@
 <Solution>
     <Project Path="Stanza\Stanza.csproj"/>
     <Project Path="Stanza.Tests\Stanza.Tests.csproj"/>
+  <Project Path="Stanza.Core/Stanza.Core.csproj" />
+  <Project Path="Stanza.Infrastructure/Stanza.Infrastructure.csproj" />
 </Solution>

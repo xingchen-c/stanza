@@ -1,5 +1,5 @@
-using Stanza.Models;
-using Stanza.Services.Lyrics;
+using Stanza.Core.Models;
+using Stanza.Core.Lyrics;
 using Xunit;
 
 namespace Stanza.Tests;

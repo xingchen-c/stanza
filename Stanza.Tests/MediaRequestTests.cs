@@ -1,5 +1,5 @@
-using Stanza.Models;
-using Stanza.Services;
+using Stanza.Core.Models;
+
 using Xunit;
 
 namespace Stanza.Tests;
@@ -9,7 +9,7 @@ public class MediaRequestTests
     [Fact]
     public void 同会话后发元数据请求使旧回包过期()
     {
-        var identity = new SmtcSessionService.MediaRequestIdentity();
+        var identity = new MediaRequestIdentity();
         var session = new object();
         identity.ChangeSession(session);
         var old = identity.BeginMetadata(session);
@@ -21,7 +21,7 @@ public class MediaRequestTests
     [Fact]
     public void A到B再到A不能复用旧选择上下文()
     {
-        var identity = new SmtcSessionService.MediaRequestIdentity();
+        var identity = new MediaRequestIdentity();
         identity.ChangeSession(new object());
         identity.ConfirmTrack(new("A", "歌手", null));
         var old = Assert.IsType<LyricsSelectionContext>(identity.CreateContext());
@@ -34,7 +34,7 @@ public class MediaRequestTests
     [Fact]
     public void 会话替换断开及空标题不接受旧上下文或旧请求()
     {
-        var identity = new SmtcSessionService.MediaRequestIdentity();
+        var identity = new MediaRequestIdentity();
         var session = new object();
         identity.ChangeSession(session);
         identity.ConfirmTrack(new("A", "歌手", null));
@@ -53,7 +53,7 @@ public class MediaRequestTests
     [Fact]
     public void 同歌元数据更新不作废手选上下文但切歌会改变revision()
     {
-        var identity = new SmtcSessionService.MediaRequestIdentity();
+        var identity = new MediaRequestIdentity();
         identity.ChangeSession(new object());
         identity.ConfirmTrack(new("A", "歌手", null));
         var context = identity.CreateContext()!;

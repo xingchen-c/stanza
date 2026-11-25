@@ -1,6 +1,6 @@
 # SMTC 播放源策略与实施边界
 
-> 最近核对：2026-11-13。主体已实现；本文只保留现行职责、行为约束和明确待办，不再作为逐步重复执行的迁移工单。当前优先稳定 QQ，网易云播放器新增适配暂缓。
+> 最近核对：2026-11-25。主体已实现；本文只保留现行职责、行为约束和明确待办，不再作为逐步重复执行的迁移工单。当前优先稳定 QQ，网易云播放器新增适配暂缓。
 
 ## 1. 两条独立链路
 
@@ -12,34 +12,34 @@
                                    歌词与渲染投影
 ```
 
-`IPlaybackSourcePolicy` 描述播放器行为，`ILyricsProvider` 搜索和解析歌词；两者独立。切换播放器不应强制切换歌词源，也不应复制一份完整的 `SmtcSessionService`。
+`IPlaybackSourcePolicy` 描述播放器行为，`ILyricsProvider` 搜索和解析歌词；两者独立。切换播放器不应强制切换歌词源，也不应复制一份完整的播放工作流。
 
 ## 2. 现行职责
 
-路径相对仓库根，类型主要位于 `Stanza/Services/Playback/`：
+路径相对仓库根，规则与策略位于 `Stanza.Core/Playback/`，平台实现位于 `Stanza.Infrastructure/Playback/`：
 
 | 类型 / 位置 | 职责 |
 | --- | --- |
-| `Stanza/Models/NowPlaying.cs` | 播放上下文与 UI 投影契约 |
-| `Stanza/Models/LyricsQuery.cs` | 歌词查询输入，不参与来源选择 |
-| `Stanza/Services/SmtcSessionSelector.cs` | 管理器初始化、枚举、来源筛选、最终选择；不订阅或转发选中会话媒体事件 |
+| `Stanza.Core/Models/NowPlaying.cs` | 播放上下文与 UI 投影契约 |
+| `Stanza.Core/Models/LyricsQuery.cs` | 歌词查询输入，不参与来源选择 |
+| `SmtcPlaybackGateway` / `SmtcPlaybackSession` | 管理器初始化、枚举、来源选择、WinRT 事件转换与播放控制，向 Core 提供纯端口 |
 | `PlaybackSourceSelector` | 纯逻辑选择与排序，可独立测试 |
 | `PlaybackSourceRegistry` | 编译期绑定策略与适配器 |
 | `IPlaybackSourcePolicy` / `Policies/` | 来源识别、元数据规范化、切歌与时间线参数、默认能力 |
-| `PlaybackStateMapper` | WinRT 播放状态映射到项目状态 |
+| `PlaybackStateMapper` | 平台端口状态映射到项目状态 |
 | `PlaybackPositionTracker` | 原始快照与边界信息合成为显示位置 |
 | `TrackSwitchStateMachine` | Idle / Suspected / Switching / Loading 与最近完成窗口 |
-| `IPlaybackSourceAdapter` / `SmtcPlaybackSourceAdapter` | 来源侧封面读取、节流与替换策略 |
-| `PlaybackCoverPipeline` | 封面生命周期、去重、解码、发布 |
-| `Stanza/Services/SmtcSessionService.cs` | 直接订阅选中会话的三类事件，编排状态、切歌、位置、歌词、封面与控制 |
-| `Stanza/MainWindow.xaml.cs` | 消费事件和 `SamplePlayback()`，不直接读取原始 SMTC 会话 |
+| `IPlaybackSourceAdapter` / `PlaybackCoverAdapter` | 来源侧封面读取、节流与替换策略 |
+| `CoverWorkflow` / `CoverDecoder` | 前者管理归属、重试及字节去重；后者在展示层解码与冻结 |
+| `PlaybackContext` / `PlaybackWorkflow` / `PlaybackRuntime` | 状态唯一归属、业务编排、独立采样与生命周期 |
+| `Stanza/MainWindow.xaml.cs` | 通过 CommandBus 操作、Query 读取快照；ticker 只渲染 |
 
-当前没有独立的 `Stanza.Core` 项目或完整会话源接口；不能把目标结构当成现状。
+Core 已独立为 net10.0 项目，IPlaybackGateway / IPlaybackSession 隔离 WinRT，具体契约与实现记录见 [架构文档](./ARCHITECTURE.md)。
 
 ## 3. 生命周期与请求身份
 
 1. 选择器初始化 SMTC 管理器，结合系统当前会话与枚举结果选择来源；定时刷新以发现会话变化。
-2. 选择变化后，服务退订旧会话，切换策略/适配器，订阅新会话的 `MediaPropertiesChanged`、`TimelinePropertiesChanged`、`PlaybackInfoChanged`。
+2. 选择变化后，工作流退订旧会话，切换策略/适配器，订阅新会话的 `MediaPropertiesChanged`、`TimelinePropertiesChanged`、`PlaybackInfoChanged`。
 3. 回调先通过 Dispatcher 回到 UI 线程；旧 sender 不得触发当前会话刷新。
 4. 读取媒体属性前捕获请求身份，await 后校验会话 epoch 与元数据序号，再确认曲目。
 5. 曲目变化推进 revision，歌词请求另用 generation；断开/Dispose 不能让旧回包重新建立当前状态。
@@ -88,36 +88,35 @@
 
 ## 6. 歌词与选择器接入
 
-服务提供的选择上下文 API：
+Query 提供选择上下文与候选搜索，应用候选通过命令：
 
 ```csharp
 LyricsSelectionContext? CreateLyricsSelectionContext();
 bool IsLyricsSelectionCurrent(LyricsSelectionContext context);
 Task<IReadOnlyList<LyricCandidate>> GetLyricCandidatesAsync(
     LyricsSelectionContext context, CancellationToken cancellationToken = default);
-Task<bool> ApplyLyricCandidateAsync(
-    LyricsSelectionContext context, LyricCandidate candidate,
-    CancellationToken cancellationToken = default);
+// 应用操作由 ICommandBus 分发给 ApplyLyricsCandidateHandler。
+await commands.SendAsync(new ApplyLyricsCandidate(context, candidate), cancellationToken);
 ```
 
 窗口必须贯穿使用同一上下文，不能取完 A 的候选后以当前 B 的标题生成应用 key。即使 A → B → A，旧窗口也因 revision 不同而失效。
 
-歌词加载、手选和 NotFound 恢复由 `LyricsCoordinator` 处理，不在播放器策略里复制。手选取消恢复并取得新的歌词 generation；当前候选过滤、缓存与超时见 [MATCH-SCORING.md](./MATCH-SCORING.md)。
+歌词加载、手选和 NotFound 恢复由 `LyricsWorkflow` 处理，不在播放器策略里复制。手选取消恢复并取得新的歌词 generation；当前候选过滤、缓存与超时见 [MATCH-SCORING.md](./MATCH-SCORING.md)。
 
 ## 7. 封面与控制能力
 
-- 适配器控制是否读取、是否允许同曲替换；管线检查结果是否过期并去重、解码、发布。
+- 适配器控制是否读取、是否允许同曲替换；工作流检查归属并去重、发布字节，展示层解码。
 - QQ / Generic 使用首张稳定封面；网易云允许 5 秒窗口内的迟到封面替换。
-- 服务按 `150 / 350 / 800 / 1500ms` 尝试重读迟到封面。
+- CoverWorkflow 按 `150 / 350 / 800 / 1500ms` 尝试重读迟到封面。
 - 保留 GDI+ 对 JPEG / ICC 的容错，再转换并冻结 WPF 图像。避免为简化代码回退为直接解码。
 - UI 控制能力优先来自 `PlaybackInfo.Controls`，读取失败才用策略默认值；播放暂停需兼容 toggle 能力。
 - 当前有上一首 / 播放暂停 / 下一首，主动 seek 未实现，策略 `SupportsSeek = false`。
 
 ## 8. UI 与线程边界
 
-- `MainWindow` 定时调用 `SamplePlayback()`，再驱动歌词二分定位与逐字裁剪。
+- `PlaybackRuntime` 独立采样，`MainWindow` 的 ticker 读取同一份快照，再驱动歌词二分定位与逐字裁剪。
 - ticker 已常驻采样窗口交互；无会话时不做播放采样，不应因断开会话停止恢复穿透状态所需的采样。
-- 原生窗口样式由 `WindowInteropService` 处理；物理像素到 DIP 的转换放在定位边界。
+- 原生窗口样式由 `WindowInterop` 处理；物理像素到 DIP 的转换放在定位边界。
 - 不为了支持一个来源，把 WinRT 原始会话重新暴露给渲染层。
 
 ## 9. 扩展一个播放源

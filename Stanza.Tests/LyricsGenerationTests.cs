@@ -1,5 +1,5 @@
-using Stanza.Models;
-using Stanza.Services.Lyrics;
+using Stanza.Core.Models;
+using Stanza.Core.Lyrics;
 using Stanza.Tests.TestDoubles;
 using Xunit;
 
@@ -12,7 +12,7 @@ public class LyricsGenerationTests
     {
         var store = new RecordingLyricsCacheStore();
         var provider = new GatedLyricsProvider();
-        var service = new LyricsService(store, provider);
+        var service = new LyricsLoader(store, provider);
 
         var oldQuery = new LyricsQuery("旧歌", "甲", null);
         var oldGate = provider.Gate(oldQuery.Title);
@@ -44,7 +44,7 @@ public class LyricsGenerationTests
     {
         var store = new RecordingLyricsCacheStore();
         var provider = new GatedLyricsProvider();
-        var service = new LyricsService(store, provider);
+        var service = new LyricsLoader(store, provider);
         var oldQuery = new LyricsQuery("旧歌", "甲", null);
 
         var oldGate = provider.Gate(oldQuery.Title);
@@ -64,8 +64,8 @@ public class LyricsGenerationTests
             [new LyricLine(0, "旧歌第一行")]));
         await oldLoad;
 
-        Assert.Contains(LyricsService.AutomaticCacheKey(oldQuery), store.WrittenKeys);
-        Assert.True(store.TryGet(LyricsService.AutomaticCacheKey(oldQuery), out var status, out var lines));
+        Assert.Contains(LyricsLoader.AutomaticCacheKey(oldQuery), store.WrittenKeys);
+        Assert.True(store.TryGet(LyricsLoader.AutomaticCacheKey(oldQuery), out var status, out var lines));
         Assert.Equal(LyricsLoadResult.Loaded, status);
         Assert.Equal("旧歌第一行", lines.Single().Text);
     }
@@ -75,7 +75,7 @@ public class LyricsGenerationTests
     {
         var store = new RecordingLyricsCacheStore();
         var provider = new GatedLyricsProvider();
-        var service = new LyricsService(store, provider);
+        var service = new LyricsLoader(store, provider);
         var candidate = new LyricCandidate(
             provider.Key,
             provider.Name,
@@ -111,10 +111,10 @@ public class LyricsGenerationTests
     {
         var store = new RecordingLyricsCacheStore();
         var provider = new GatedLyricsProvider();
-        var service = new LyricsService(store, provider);
+        var service = new LyricsLoader(store, provider);
         var oldQuery = new LyricsQuery("旧歌", "甲", null);
         store.Put(
-            LyricsService.AutomaticCacheKey(oldQuery),
+            LyricsLoader.AutomaticCacheKey(oldQuery),
             LyricsLoadResult.Loaded,
             [new LyricLine(0, "旧歌缓存行")]);
         var staleGeneration = service.Generation;

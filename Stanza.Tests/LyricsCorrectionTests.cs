@@ -1,5 +1,5 @@
-using Stanza.Models;
-using Stanza.Services.Lyrics;
+using Stanza.Core.Models;
+using Stanza.Core.Lyrics;
 using Xunit;
 
 namespace Stanza.Tests;
@@ -15,10 +15,10 @@ public sealed class LyricsCorrectionTests(SqliteStorageFixture fixture)
     public async Task 恢复自动匹配应移除本曲记忆并绕过内存和磁盘中的旧自动歌词()
     {
         var cache = fixture.Cache;
-        cache.Put(LyricsService.AutomaticCacheKey(Query), LyricsLoadResult.Loaded, [new(0, "旧自动词")]);
+        cache.Put(LyricsLoader.AutomaticCacheKey(Query), LyricsLoadResult.Loaded, [new(0, "旧自动词")]);
         var choices = fixture.Choices;
         var provider = new Provider();
-        var coordinator = new LyricsCoordinator(cache, choices, () => Query.Key, provider);
+        var coordinator = new LyricsWorkflow(cache, choices, () => Query.Key, provider);
         await coordinator.LoadAsync(Query);
         choices.Put(Query.Key, ManualCandidate);
         choices.Put("其他歌曲", ManualCandidate);
@@ -36,7 +36,7 @@ public sealed class LyricsCorrectionTests(SqliteStorageFixture fixture)
         var restartedChoices = new SqliteLyricsChoiceStore(fixture.Database);
         restartedCache.Initialize();
         restartedChoices.Initialize();
-        var restarted = new LyricsCoordinator(restartedCache, restartedChoices, () => Query.Key, new Provider());
+        var restarted = new LyricsWorkflow(restartedCache, restartedChoices, () => Query.Key, new Provider());
         Assert.Equal(LyricsLoadResult.Loaded, await restarted.LoadAsync(Query).WaitAsync(TimeSpan.FromSeconds(2)));
         Assert.Equal("新自动词", restarted.Lyrics.Lines.Single().Text);
     }
@@ -47,7 +47,7 @@ public sealed class LyricsCorrectionTests(SqliteStorageFixture fixture)
         var cache = new InMemoryLyricsCacheStore();
         var choices = new InMemoryLyricsChoiceStore();
         var provider = new Provider();
-        var coordinator = new LyricsCoordinator(cache, choices, () => Query.Key, provider);
+        var coordinator = new LyricsWorkflow(cache, choices, () => Query.Key, provider);
         var manual = coordinator.ApplyCandidateAsync(Query.Key, ManualCandidate);
         provider.Automatic.SetResult(Result("自动词"));
 
@@ -57,7 +57,7 @@ public sealed class LyricsCorrectionTests(SqliteStorageFixture fixture)
         Assert.False(await manual);
         Assert.False(choices.TryGet(Query.Key, out _));
         Assert.Equal("自动词", coordinator.Lyrics.Lines.Single().Text);
-        Assert.False(cache.TryGet(LyricsService.CandidateCacheKey(Query.Key, ManualCandidate), out _, out _));
+        Assert.False(cache.TryGet(LyricsLoader.CandidateCacheKey(Query.Key, ManualCandidate), out _, out _));
     }
 
     [Fact]
@@ -67,7 +67,7 @@ public sealed class LyricsCorrectionTests(SqliteStorageFixture fixture)
         choices.Put(Query.Key, ManualCandidate);
         var currentKey = "其他歌曲";
         var provider = new Provider();
-        var coordinator = new LyricsCoordinator(new InMemoryLyricsCacheStore(), choices, () => currentKey, provider);
+        var coordinator = new LyricsWorkflow(new InMemoryLyricsCacheStore(), choices, () => currentKey, provider);
         Assert.False(await coordinator.RestoreAutomaticAsync(Query));
         Assert.True(choices.TryGet(Query.Key, out _));
         Assert.Equal(0, provider.SearchCount);
@@ -91,18 +91,18 @@ public sealed class LyricsCorrectionTests(SqliteStorageFixture fixture)
     public async Task 重新匹配未找到时应清掉错误歌词且不恢复旧绑定或旧自动缓存()
     {
         var cache = new InMemoryLyricsCacheStore();
-        cache.Put(LyricsService.AutomaticCacheKey(Query), LyricsLoadResult.Loaded, [new(0, "错误词")]);
+        cache.Put(LyricsLoader.AutomaticCacheKey(Query), LyricsLoadResult.Loaded, [new(0, "错误词")]);
         var choices = new InMemoryLyricsChoiceStore();
         choices.Put(Query.Key, ManualCandidate);
         var provider = new Provider();
         provider.Automatic.SetResult(new(LyricsLoadResult.NotFound, []));
-        var coordinator = new LyricsCoordinator(cache, choices, () => Query.Key, provider);
+        var coordinator = new LyricsWorkflow(cache, choices, () => Query.Key, provider);
 
         Assert.True(await coordinator.RestoreAutomaticAsync(Query));
 
         Assert.Empty(coordinator.Lyrics.Lines);
         Assert.False(choices.TryGet(Query.Key, out _));
-        Assert.False(cache.TryGet(LyricsService.AutomaticCacheKey(Query), out _, out _));
+        Assert.False(cache.TryGet(LyricsLoader.AutomaticCacheKey(Query), out _, out _));
     }
 
     private static LyricsResult Result(string text) => new(LyricsLoadResult.Loaded, [new(0, text)]);

@@ -1,7 +1,7 @@
 using Lyricify.Lyrics.Searchers;
 using Lyricify.Lyrics.Searchers.Helpers;
-using Stanza.Models;
-using Stanza.Services.Lyrics;
+using Stanza.Core.Models;
+using Stanza.Core.Lyrics;
 using Xunit;
 
 namespace Stanza.Tests;
@@ -9,33 +9,6 @@ namespace Stanza.Tests;
 /// <summary>离线验证生产候选准入与排序，不调用搜索、取词或应用日志。</summary>
 public class QqCandidateSelectionTests
 {
-    [Theory]
-    [InlineData("回旋", "回旋木马", false)]
-    [InlineData("黑夜回旋", "回旋", false)]
-    [InlineData("星", "星炬不熄", false)]
-    [InlineData("【盗墓笔记】见闻山海 (剧情版)", "见闻山海", true)]
-    [InlineData("Song (Live)", "Song - Live Version", true)]
-    [InlineData("Song - Live Version", "Song (Live)", true)]
-    [InlineData("Song - Other Song", "Song", false)]
-    [InlineData("题都城南庄 (古诗诵读)", "题都城南庄", false)]
-    [InlineData("题都城南庄(儿童古诗词)", "题都城南庄", false)]
-    [InlineData("题都城南庄(崔护·唐)", "题都城南庄", false)]
-    [InlineData("题都城南庄（朗诵）", "题都城南庄", false)]
-    [InlineData("题都城南庄 (儿童精选古诗词)", "题都城南庄", false)]
-    [InlineData("题都城南庄", "题都城南庄（朗诵）", false)]
-    [InlineData("题都城南庄（朗诵）", "题都城南庄（朗诵）", true)]
-    [InlineData("题都城南庄（Live）", "题都城南庄", true)]
-    [InlineData("题都城南庄 (伴奏版)", "题都城南庄", true)]
-    [InlineData("Song (Remix)", "Song - Remix", true)]
-    [InlineData("Stairway to Heaven", " stairway TO heaven ", true)]
-    [InlineData("花", "花", true)]
-    [InlineData("", "", false)]
-    [InlineData(" ", "Song", false)]
-    public void 核心歌名相关性不以子串代替同曲(string candidate, string expected, bool related)
-    {
-        Assert.Equal(related, QqMusicLyricsProvider.IsSameSongTitle(candidate, expected));
-    }
-
     [Fact]
     public async Task 手动跨源列表保留全部且同曲优先于高分同歌手噪声()
     {

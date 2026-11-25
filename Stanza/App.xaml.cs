@@ -1,8 +1,12 @@
 using System.IO;
+using System.ComponentModel;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Stanza.Composition;
+using Stanza.Infrastructure;
 using System.Text;
 using System.Windows;
 using System.Windows.Threading;
-using Stanza.Services;
 
 namespace Stanza;
 
@@ -13,10 +17,11 @@ public partial class App
 {
     private static Mutex? _singleInstanceMutex;
 
-    internal AppServices Services { get; private set; } = null!;
+    private IHost? _host;
+    private bool _shutdownStarted;
 
     /// <summary>启动入口：迁移旧数据、注册异常兜底并建立单实例互斥体。</summary>
-    protected override void OnStartup(StartupEventArgs e)
+    protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
@@ -33,15 +38,52 @@ public partial class App
         if (!createdNew)
         {
             AppLog.Info("检测到已有实例，本次启动退出");
-            // WPF 在 OnStartup 返回后仍会处理 StartupUri；Shutdown() 只是异步排队，
-            // 清掉 StartupUri 才能阻止组合根尚未赋值时 MainWindow 被构造。
-            StartupUri = null;
             Shutdown();
             return;
         }
 
         AppLog.Info($"应用启动 v{AppVersion.Full}，数据目录={AppDataPaths.DataDirectory}");
-        Services = new AppServices();
+        try
+        {
+            _host = ApplicationHost.Build(Dispatcher);
+            var window = _host.Services.GetRequiredService<WindowFactory>().CreateMainWindow();
+            MainWindow = window;
+            window.Closing += OnMainWindowClosing;
+            await _host.StartAsync();
+            window.Show();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("应用初始化失败", ex);
+            await StopHostAsync();
+            Shutdown(1);
+        }
+    }
+
+    private async void OnMainWindowClosing(object? sender, CancelEventArgs e)
+    {
+        // 先保留窗口与 Dispatcher，让 Host 等待异步收尾；完成后退订本回调再真正关闭。
+        e.Cancel = true;
+        if (_shutdownStarted) return;
+        _shutdownStarted = true;
+        MainWindow.IsEnabled = false;
+        ((MainWindow)MainWindow).PrepareForShutdown();
+        await StopHostAsync();
+        MainWindow.Closing -= OnMainWindowClosing;
+        MainWindow.Close();
+        Shutdown();
+    }
+
+    private async Task StopHostAsync()
+    {
+        if (_host is null) return;
+        try { await _host.StopAsync(); }
+        catch (Exception ex) { AppLog.Error("应用停止失败", ex); }
+        if (_host is IAsyncDisposable asyncDisposable)
+            await asyncDisposable.DisposeAsync();
+        else
+            _host.Dispose();
+        _host = null;
     }
 
     /// <summary>退出清理：释放单实例互斥体并冲刷异步日志。</summary>
@@ -56,6 +98,7 @@ public partial class App
             // 不持有互斥体时释放会抛异常，忽略
         }
 
+        _singleInstanceMutex?.Dispose();
         AppLog.Info("应用退出");
         AppLog.Flush(); // 冲刷异步缓冲，确保最后一行落盘
         base.OnExit(e);

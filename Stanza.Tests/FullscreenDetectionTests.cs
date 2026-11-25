@@ -1,5 +1,5 @@
-using Stanza.Models;
-using Stanza.Services.Desktop;
+using Stanza.Core.Models;
+using Stanza.Desktop;
 using Xunit;
 
 namespace Stanza.Tests;

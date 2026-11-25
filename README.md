@@ -108,20 +108,19 @@ portable 表示程序免安装，默认仍使用 AppData 保存数据。Scoop �
 ## 当前架构
 
 ```mermaid
-flowchart TB
-    SMTC["Windows 媒体会话"] --> Selector["会话枚举与选择<br/>SmtcSessionSelector"]
-    Selector --> Playback["会话事件与播放编排<br/>SmtcSessionService"]
-    Playback <--> Timing["播放器策略、切歌状态机<br/>位置追踪、封面管线"]
-    Playback <--> Lyrics["歌词协调与当前歌词<br/>LyricsCoordinator / LyricsService"]
-    Lyrics --> Decision["多源搜索、统一排序<br/>置信判断、按候选取词"]
-    Decision <--> Providers["QQ / 网易云 / LRCLIB"]
-    Lyrics <--> Storage["SQLite<br/>歌词缓存、手选记忆、单曲偏移"]
-    Playback <--> Storage
-    Playback <--> UI["主卡片、选词窗口、渲染"]
-    Desktop["任务栏定位、全屏检测<br/>DPI、点击穿透"] --> UI
+flowchart LR
+    UI[WPF 界面] --> Commands[CommandBus / Handler]
+    UI --> Queries[Query / 只读快照]
+    Host[Generic Host] --> Runtime[独立播放采样]
+    SMTC[SMTC 平台网关] --> Runtime
+    Runtime --> Workflows[播放 / 歌词 / 封面 Workflow]
+    Commands --> Workflows
+    Workflows --> State[PlaybackContext / LyricsContext]
+    State --> Queries
+    Workflows --> Ports[词源 / 存储端口]
 ```
 
-主界面使用 WPF，WinForms 仅用于托盘。`AppServices` 创建数据库、缓存、选择记忆与单曲偏移存储；`MainWindow` 与 `SmtcSessionService` 显式装配播放和歌词服务，无 DI 框架或运行期插件。SMTC 事件通过 Dispatcher 回到 UI 线程，界面定时采样播放位置，叠加全局与单曲偏移后驱动歌词行与逐字进度。
+主界面使用 WPF，WinForms 仅用于托盘。`Stanza.Core` 包含状态、规则、Command / Query 和工作流；`Stanza.Infrastructure` 实现 SMTC、词源与持久化；WPF 外壳通过 Microsoft DI / Generic Host 装配并管理生命周期。播放独立采样，界面读取完整快照，叠加全局与单曲偏移后渲染。实现和验收依据见 [架构文档](doc/ARCHITECTURE.md)。
 
 更详细的职责、请求失效保护和回归约束见 [架构交接](doc/HANDOVER.md)；匹配规则见 [歌词候选决策](doc/MATCH-SCORING.md)，后续方向见 [路线图](doc/ROADMAP.md)。
 

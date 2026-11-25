@@ -33,7 +33,7 @@ ticker 同时驱动歌词渲染和窗口交互采样；无会话时仍需维护�
 ## 4. 不改的窗口机制
 
 - 保留 `AllowsTransparency`、透明分层窗口及原有任务栏定位。
-- 点击穿透由 `WindowInteropService` 按光标区域动态切换 `WS_EX_TRANSPARENT`，并保留不抢焦点样式。
+- 点击穿透由 `WindowInterop` 按光标区域动态切换 `WS_EX_TRANSPARENT`，并保留不抢焦点样式。
 - 不再把 `WM_NCHITTEST / HTTRANSPARENT` 当作跨进程点击穿透方案。
 - 如需进一步改变透明窗口形态，应另行评估交互与定位风险，不作为降级方案的顺手修改。
 

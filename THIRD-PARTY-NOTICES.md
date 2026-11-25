@@ -8,6 +8,7 @@
 |-------------------------------------------|-----------------------|
 | Lyricify.Lyrics.Helper 0.2.0              | Apache-2.0            |
 | Microsoft.Data.Sqlite / SQLitePCLRaw      | MIT / Apache-2.0      |
+| Microsoft.Extensions.Hosting / DependencyInjection | MIT          |
 | SQLite 引擎                               | Public Domain         |
 | Serilog / File / Async sinks              | Apache-2.0            |
 | Newtonsoft.Json                           | MIT                   |

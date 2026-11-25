@@ -1,6 +1,6 @@
-using Stanza.Models;
-using Stanza.Services.Playback;
-using Stanza.Services.Lyrics;
+using Stanza.Core.Models;
+using Stanza.Core.Playback;
+using Stanza.Core.Lyrics;
 using System.Text.Json;
 using Xunit;
 
@@ -523,7 +523,7 @@ public class LyricCandidateTests
     [Fact]
     public async Task Candidate_list_puts_artist_match_before_higher_scored_mismatch()
     {
-        var service = new LyricsService(
+        var service = new LyricsLoader(
             new MemoryLyricsCacheStore(),
             new FakeCandidateProvider());
 

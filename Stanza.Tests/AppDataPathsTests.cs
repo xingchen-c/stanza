@@ -1,8 +1,8 @@
 using System.IO;
 using System.Text.Json;
-using Stanza.Models;
-using Stanza.Services;
-using Stanza.Services.Storage;
+using Stanza.Core.Models;
+
+using Stanza.Infrastructure.Storage;
 using Xunit;
 
 namespace Stanza.Tests;
@@ -46,11 +46,11 @@ public sealed class AppDataPathsTests
         Assert.Equal(TestEnvironment.DataDirectory, AppDataPaths.DataDirectory);
 
         var settings = new AppSettings { FontSize = 23, LyricOffsetMs = 450 };
-        AppSettingsService.Save(settings);
+        new SettingsFile().Save(settings);
         Assert.True(File.Exists(Path.Combine(TestEnvironment.DataDirectory, "settings.json")));
         Assert.False(File.Exists(AppDataPaths.SettingsPath + ".tmp"));
-        Assert.Equal(settings.FontSize, AppSettingsService.Load().FontSize);
-        Assert.Equal(settings.LyricOffsetMs, AppSettingsService.Load().LyricOffsetMs);
+        Assert.Equal(settings.FontSize, new SettingsFile().Load().FontSize);
+        Assert.Equal(settings.LyricOffsetMs, new SettingsFile().Load().LyricOffsetMs);
 
         var database = new LocalDatabase();
         database.Initialize();
@@ -83,7 +83,7 @@ public sealed class AppDataPathsTests
             Entries = new[] { new { Key = key, LastUsedUnixMs = 123, Candidate = candidate } }
         }));
 
-        var services = new AppServices();
+        var services = new StorageBackend();
 
         Assert.True(services.LyricsCache.TryGet(key, out var status, out var lines));
         Assert.Equal(LyricsLoadResult.Loaded, status);

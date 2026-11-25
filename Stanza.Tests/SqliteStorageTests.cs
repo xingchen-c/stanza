@@ -1,8 +1,8 @@
 using System.IO;
 using Microsoft.Data.Sqlite;
-using Stanza.Models;
-using Stanza.Services.Lyrics;
-using Stanza.Services.Storage;
+using Stanza.Core.Models;
+using Stanza.Core.Lyrics;
+using Stanza.Infrastructure.Storage;
 using Xunit;
 
 namespace Stanza.Tests;
