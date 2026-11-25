@@ -17,4 +17,6 @@ internal sealed class InMemoryLyricsChoiceStore : ILyricsChoiceStore
     public void Put(string key, LyricCandidate candidate) => _items[key] = candidate;
 
     public void Clear() => _items.Clear();
+
+    public void Remove(string key) => _items.Remove(key);
 }

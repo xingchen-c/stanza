@@ -85,6 +85,11 @@ internal sealed class LocalDatabase
                 );
                 CREATE INDEX IF NOT EXISTS idx_lyrics_choice_last_used
                     ON lyrics_choice(last_used_utc_ms);
+
+                CREATE TABLE IF NOT EXISTS lyrics_offset (
+                    key TEXT PRIMARY KEY,
+                    offset_ms INTEGER NOT NULL
+                );
                 """);
 
             _initialized = true;

@@ -82,6 +82,8 @@ public sealed class SmtcSessionService : IDisposable
     /// <summary>歌词库（UI 渲染读取行数据）</summary>
     public LyricsService Lyrics => _lyricsCoordinator.Lyrics;
 
+    public int CurrentLyricOffsetMs => _lyricsOffsetStore.Get(_currentKey);
+
     private static readonly IPlaybackSourceAdapter DefaultAdapter =
         PlaybackSourceRegistry.ResolveAdapterByKey(PlaybackSourceIds.AutoFallback);
 
@@ -95,14 +97,17 @@ public sealed class SmtcSessionService : IDisposable
     private string? _lastNoSessionStatus;
     private int _coverRetryGeneration;
     private readonly LyricsCoordinator _lyricsCoordinator;
+    private readonly ILyricsOffsetStore _lyricsOffsetStore;
 
     /// <summary>创建播放协调器，创建会话选择器并订阅其选择结果。</summary>
     internal SmtcSessionService(
         Dispatcher dispatcher,
         ILyricsCacheStore lyricsCacheStore,
-        ILyricsChoiceStore lyricsChoiceStore)
+        ILyricsChoiceStore lyricsChoiceStore,
+        ILyricsOffsetStore lyricsOffsetStore)
     {
         _dispatcher = dispatcher;
+        _lyricsOffsetStore = lyricsOffsetStore;
         _lyricsCoordinator = new LyricsCoordinator(
             lyricsCacheStore,
             lyricsChoiceStore,
@@ -568,6 +573,28 @@ public sealed class SmtcSessionService : IDisposable
             return false;
         var applied = await _lyricsCoordinator.ApplyCandidateAsync(context.Key, candidate, cancellationToken);
         if (!applied || !IsLyricsSelectionCurrent(context))
+            return false;
+        _lyricsRequested = true;
+        return true;
+    }
+
+    public int GetLyricOffset(LyricsSelectionContext context) => _lyricsOffsetStore.Get(context.Key);
+
+    public bool SetLyricOffset(LyricsSelectionContext context, int offsetMs)
+    {
+        if (!IsLyricsSelectionCurrent(context) ||
+            offsetMs is < -ILyricsOffsetStore.MaximumOffsetMs or > ILyricsOffsetStore.MaximumOffsetMs)
+            return false;
+        return _lyricsOffsetStore.Set(context.Key, offsetMs);
+    }
+
+    public async Task<bool> RestoreAutomaticLyricsAsync(
+        LyricsSelectionContext context, CancellationToken cancellationToken = default)
+    {
+        if (!IsLyricsSelectionCurrent(context))
+            return false;
+        var restored = await _lyricsCoordinator.RestoreAutomaticAsync(context.Query, cancellationToken);
+        if (!restored || !IsLyricsSelectionCurrent(context))
             return false;
         _lyricsRequested = true;
         return true;

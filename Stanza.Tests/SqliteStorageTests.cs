@@ -64,13 +64,51 @@ public sealed class SqliteStorageTests(SqliteStorageFixture fixture)
     }
 
     [Fact]
+    public void 单曲选择删除后重启不恢复且其他歌曲记忆保留()
+    {
+        var candidate = new LyricCandidate("QQ", "QQ 音乐", "123", "歌名", "歌手", null, null, null);
+        fixture.Choices.Put("remove:A", candidate);
+        fixture.Choices.Put("remove:B", candidate);
+
+        fixture.Choices.Remove("remove:A");
+        var restarted = new SqliteLyricsChoiceStore(fixture.Database);
+
+        Assert.False(restarted.TryGet("remove:A", out _));
+        Assert.True(restarted.TryGet("remove:B", out var remaining));
+        Assert.Equal(candidate, remaining);
+    }
+
+    [Fact]
+    public void 单曲偏移重启保留且归零和清缓存不影响其他歌曲()
+    {
+        var offsets = new SqliteLyricsOffsetStore(fixture.Database);
+        offsets.Initialize();
+        Assert.Equal(0, offsets.Get("offset:unknown"));
+        Assert.True(offsets.Set("offset:A", 500));
+        Assert.True(offsets.Set("offset:B", -300));
+        fixture.Cache.Clear();
+        fixture.Choices.Clear();
+
+        var restarted = new SqliteLyricsOffsetStore(fixture.Database);
+        restarted.Initialize();
+        Assert.Equal(500, restarted.Get("offset:A"));
+        Assert.Equal(-300, restarted.Get("offset:B"));
+        Assert.True(restarted.Set("offset:A", 0));
+
+        var afterReset = new SqliteLyricsOffsetStore(fixture.Database);
+        afterReset.Initialize();
+        Assert.Equal(0, afterReset.Get("offset:A"));
+        Assert.Equal(-300, afterReset.Get("offset:B"));
+    }
+
+    [Fact]
     public void Database_creates_expected_tables()
     {
         using var connection = fixture.Database.Open();
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT name FROM sqlite_master
-            WHERE type = 'table' AND name IN ('lyrics_cache', 'lyrics_choice')
+            WHERE type = 'table' AND name IN ('lyrics_cache', 'lyrics_choice', 'lyrics_offset')
             ORDER BY name;
             """;
 
@@ -79,7 +117,7 @@ public sealed class SqliteStorageTests(SqliteStorageFixture fixture)
         while (reader.Read())
             tables.Add(reader.GetString(0));
 
-        Assert.Equal(["lyrics_cache", "lyrics_choice"], tables);
+        Assert.Equal(["lyrics_cache", "lyrics_choice", "lyrics_offset"], tables);
         Assert.True(File.Exists(fixture.DatabasePath));
     }
 

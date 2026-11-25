@@ -113,6 +113,19 @@ public sealed class SqliteLyricsChoiceStore : ILyricsChoiceStore
         }
     }
 
+    public void Remove(string key)
+    {
+        lock (_gate)
+        {
+            EnsureLegacyMigrated();
+            using var connection = _database.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM lyrics_choice WHERE key = $key;";
+            command.Parameters.AddWithValue("$key", key);
+            command.ExecuteNonQuery();
+        }
+    }
+
     /// <summary>清空用户选择记忆。</summary>
     public void Clear()
     {

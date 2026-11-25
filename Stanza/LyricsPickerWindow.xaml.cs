@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using Stanza.Models;
+using Stanza.Services.Lyrics;
 
 namespace Stanza;
 
@@ -11,6 +12,9 @@ public partial class LyricsPickerWindow : Window
     private readonly Func<LyricsSelectionContext, CancellationToken, Task<IReadOnlyList<LyricCandidate>>> _search;
     private readonly Func<LyricsSelectionContext, LyricCandidate, CancellationToken, Task<bool>> _apply;
     private readonly Func<LyricsSelectionContext, bool> _isCurrent;
+    private readonly Func<LyricsSelectionContext, int, bool> _setOffset;
+    private readonly Func<LyricsSelectionContext, CancellationToken, Task<bool>> _restoreAutomatic;
+    private int _offsetMs;
     private readonly CancellationTokenSource _cancellation = new();
     private IReadOnlyList<LyricCandidate> _candidates = [];
     private bool _busy;
@@ -22,14 +26,21 @@ public partial class LyricsPickerWindow : Window
         LyricsSelectionContext context,
         Func<LyricsSelectionContext, CancellationToken, Task<IReadOnlyList<LyricCandidate>>> search,
         Func<LyricsSelectionContext, LyricCandidate, CancellationToken, Task<bool>> apply,
-        Func<LyricsSelectionContext, bool> isCurrent)
+        Func<LyricsSelectionContext, bool> isCurrent,
+        int offsetMs,
+        Func<LyricsSelectionContext, int, bool> setOffset,
+        Func<LyricsSelectionContext, CancellationToken, Task<bool>> restoreAutomatic)
     {
         InitializeComponent();
         _context = context;
         _search = search;
         _apply = apply;
         _isCurrent = isCurrent;
+        _offsetMs = offsetMs;
+        _setOffset = setOffset;
+        _restoreAutomatic = restoreAutomatic;
         TrackText.Text = $"{context.Query.Title} - {context.Query.Artist}";
+        UpdateControls();
         Loaded += async (_, _) => await LoadCandidatesAsync();
         Closed += (_, _) =>
         {
@@ -193,6 +204,64 @@ public partial class LyricsPickerWindow : Window
         }
     }
 
+    private void ChangeOffset(int offsetMs)
+    {
+        RefreshTrackContext();
+        if (_closed || _stale)
+            return;
+        if (_setOffset(_context, offsetMs))
+        {
+            _offsetMs = offsetMs;
+            OffsetStatusText.Text = "";
+            UpdateControls();
+        }
+        else
+        {
+            RefreshTrackContext();
+            if (!_stale)
+                OffsetStatusText.Text = "偏移未能保存，请重试。";
+        }
+    }
+
+    private void Delay_Click(object sender, RoutedEventArgs e) => ChangeOffset(_offsetMs - 100);
+    private void Advance_Click(object sender, RoutedEventArgs e) => ChangeOffset(_offsetMs + 100);
+    private void ResetOffset_Click(object sender, RoutedEventArgs e) => ChangeOffset(0);
+
+    private async void RestoreAutomatic_Click(object sender, RoutedEventArgs e)
+    {
+        RefreshTrackContext();
+        if (_busy || _closed || _stale)
+            return;
+
+        _busy = true;
+        StatusText.Text = "正在重新匹配歌词…";
+        UpdateControls();
+        try
+        {
+            var restored = await _restoreAutomatic(_context, _cancellation.Token);
+            RefreshTrackContext();
+            if (_closed || _stale)
+                return;
+            StatusText.Text = restored
+                ? "已恢复本曲自动匹配，仍可手动选择其他版本。"
+                : "未能恢复自动匹配，请重试。";
+        }
+        catch (OperationCanceledException) when (_closed || _stale || _cancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception)
+        {
+            if (!_closed && !_stale)
+                StatusText.Text = "恢复自动匹配失败，请重试。";
+        }
+        finally
+        {
+            _busy = false;
+            if (!_closed)
+                UpdateControls();
+        }
+    }
+
     private void UpdateControls()
     {
         ApplyButton.IsEnabled = !_busy && !_stale && CandidateList.SelectedItem is CandidateView;
@@ -200,6 +269,11 @@ public partial class LyricsPickerWindow : Window
         CandidateList.IsEnabled = !_busy && !_stale;
         ShowOtherArtistsCheckBox.IsEnabled = !_busy && !_stale;
         LoadingProgress.Visibility = _busy && !_stale ? Visibility.Visible : Visibility.Collapsed;
+        RestoreAutomaticButton.IsEnabled = !_busy && !_stale;
+        DelayButton.IsEnabled = !_stale && _offsetMs > -ILyricsOffsetStore.MaximumOffsetMs;
+        AdvanceButton.IsEnabled = !_stale && _offsetMs < ILyricsOffsetStore.MaximumOffsetMs;
+        ResetOffsetButton.IsEnabled = !_stale && _offsetMs != 0;
+        OffsetText.Text = $"{_offsetMs:+0;-0;0} ms";
     }
 
     private async void Retry_Click(object sender, RoutedEventArgs e) => await LoadCandidatesAsync();

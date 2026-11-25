@@ -81,6 +81,8 @@
 
 手选失败或取消时保留已有歌词；当前无歌词且查询仍属于同曲时，以当前 generation 恢复加载。切歌或后发手选接管后，不恢复旧请求。纯音乐可临时应用，但不写本次手选记忆和候选缓存。
 
+选择窗口支持「恢复本曲自动匹配」：只删除本曲选择记忆及当前查询的自动缓存，开启新 generation 后重新匹配，保留其他歌曲的记忆、候选专用缓存和单曲偏移。清除操作与缓存写入串行，旧手选或自动请求晚到不能恢复错误绑定；重新匹配无结果时不保留原错误歌词。
+
 ## 7. 跨请求一致性
 
 - `LyricsSelectionContext` 固定曲目 revision；搜索、返回和应用均校验上下文，A → B → A 后原窗口也失效。
@@ -100,7 +102,7 @@
 
 ## 9. 回归与验证边界
 
-主要入口：`LyricsDecisionTests`、`TrackDurationEvidenceTests`、`LyricsRecoveryTests`、`LyricsProviderChainTests`、`LyricsProviderResponseTests`、`LyricsGenerationTests`、`LyricsSelectionTests`、`SqliteStorageTests`，以及保留的 QQ 搜索/解析、严格同名和人工列表测试。
+主要入口：`LyricsDecisionTests`、`TrackDurationEvidenceTests`、`LyricsRecoveryTests`、`LyricsProviderChainTests`、`LyricsProviderResponseTests`、`LyricsGenerationTests`、`LyricsSelectionTests`、`LyricsCorrectionTests`、`SqliteStorageTests`，以及保留的 QQ 搜索/解析、严格同名和人工列表测试。
 
 2026-11-24 新增 7 项响应回归，通过替换 HTTP 传输调用真实搜索、比较和解析实现，覆盖《三春序》《朝花·烛悴》的仅标题召回及网易云未收录/空响应/明确纯音乐等情况。隔离数据目录下调用真实多源自动链，两首分别采用 QQ `346389934`（61 行）和 `105979722`（32 行）；这是两个样本的实网验证，未启动主应用或操控播放器。
 

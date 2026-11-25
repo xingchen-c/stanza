@@ -46,6 +46,8 @@ internal sealed class RecordingLyricsCacheStore : ILyricsCacheStore
         _items.Clear();
         _writtenKeys.Clear();
     }
+
+    public void Remove(string key) => _items.Remove(key);
 }
 
 /// <summary>带写入记录的歌词选择记忆替身。</summary>
@@ -68,6 +70,8 @@ internal sealed class RecordingLyricsChoiceStore : ILyricsChoiceStore
         _items[key] = candidate;
         _writtenKeys.Add(key);
     }
+
+    public void Remove(string key) => _items.Remove(key);
 
     public void Clear()
     {

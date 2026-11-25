@@ -149,6 +149,41 @@ internal sealed class LyricsCoordinator
         return true;
     }
 
+    public async Task<bool> RestoreAutomaticAsync(
+        LyricsQuery query, CancellationToken cancellationToken = default)
+    {
+        if (_currentKey() != query.Key || cancellationToken.IsCancellationRequested)
+            return false;
+
+        _choiceStore.Remove(query.Key);
+        CancelRecovery();
+        var generation = Lyrics.BeginManualSelection(query.Key);
+        _lastQuery = query;
+        Lyrics.Clear();
+        StatusChanged?.Invoke("正在重新匹配歌词…");
+        try
+        {
+            var result = await Lyrics.ReloadAutomaticAsync(query, generation, cancellationToken);
+            if (!IsCurrent(query.Key, generation, cancellationToken))
+                return false;
+            ApplyResult(query.Key, result);
+            AppLog.Info($"已恢复本曲自动歌词匹配: '{query.Title}' / {query.Artist}（{result}）");
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            ResumeAutomaticLoading(query.Key, generation);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn($"恢复本曲自动歌词匹配失败: {ex.Message}");
+            if (IsCurrent(query.Key, generation, cancellationToken))
+                StatusChanged?.Invoke("重新匹配失败，请重试");
+            return false;
+        }
+    }
+
     private void ResumeAutomaticLoading(string key, int generation)
     {
         if (!IsCurrent(key, generation, CancellationToken.None) || Lyrics.Lines.Count > 0 ||

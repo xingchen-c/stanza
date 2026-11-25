@@ -8,6 +8,9 @@ internal interface ILyricsCacheStore
     bool TryGet(string key, out LyricsLoadResult status, out List<LyricLine> lines);
     void Put(string key, LyricsLoadResult status, IReadOnlyList<LyricLine> lines);
     void Clear();
+    void Remove(string key);
+
+    Task RemoveAsync(string key) => Task.Run(() => Remove(key));
 
     /// <summary>把同步实现挪到线程池，避免 SQLite IO 压在 WPF UI 线程上。</summary>
     Task<LyricsCacheHit?> GetAsync(string key)

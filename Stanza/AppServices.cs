@@ -15,14 +15,17 @@ internal sealed class AppServices
             Database.Initialize();
             LyricsCache = new SqliteLyricsCacheStore(Database);
             LyricsChoices = new SqliteLyricsChoiceStore(Database);
+            LyricsOffsets = new SqliteLyricsOffsetStore(Database);
             LyricsCache.Initialize();
             LyricsChoices.Initialize();
+            LyricsOffsets.Initialize();
         }
         catch (Exception ex)
         {
             AppLog.Warn($"本地数据库初始化失败，改用内存存储: {ex.Message}");
             LyricsCache = new InMemoryLyricsCacheStore();
             LyricsChoices = new InMemoryLyricsChoiceStore();
+            LyricsOffsets = new InMemoryLyricsOffsetStore();
         }
     }
 
@@ -31,4 +34,6 @@ internal sealed class AppServices
     public ILyricsCacheStore LyricsCache { get; }
 
     public ILyricsChoiceStore LyricsChoices { get; }
+
+    public ILyricsOffsetStore LyricsOffsets { get; }
 }

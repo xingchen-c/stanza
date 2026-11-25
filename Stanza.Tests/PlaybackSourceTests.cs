@@ -598,5 +598,6 @@ public class LyricCandidateTests
         }
 
         public void Clear() => _items.Clear();
+        public void Remove(string key) => _items.Remove(key);
     }
 }

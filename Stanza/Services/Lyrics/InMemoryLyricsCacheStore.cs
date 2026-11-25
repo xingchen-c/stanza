@@ -47,4 +47,12 @@ internal sealed class InMemoryLyricsCacheStore : ILyricsCacheStore
     }
 
     public void Clear() => _items.Clear();
+
+    public void Remove(string key) => _items.Remove(key);
+
+    public Task RemoveAsync(string key)
+    {
+        Remove(key);
+        return Task.CompletedTask;
+    }
 }

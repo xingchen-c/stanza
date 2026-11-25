@@ -36,7 +36,7 @@ public sealed class LyricsService
     internal bool IsCurrentGeneration(int generation)
         => Volatile.Read(ref _generation) == generation;
 
-    /// <summary>手选接管同曲的自动请求，但不作废其它曲目迟到结果的缓存资格。</summary>
+    /// <summary>手动纠错接管同曲旧请求，但不作废其它曲目迟到结果的缓存资格。</summary>
     internal int BeginManualSelection(string key)
     {
         InvalidateInFlight();
@@ -73,6 +73,24 @@ public sealed class LyricsService
             _linesKey = query.Key;
         }
         return result.Status;
+    }
+
+    internal async Task<LyricsLoadResult> ReloadAutomaticAsync(
+        LyricsQuery query, int generation, CancellationToken cancellationToken)
+    {
+        var key = AutomaticCacheKey(query);
+        // 删除排在旧写入之后；已接受的清除操作不随选择窗口关闭而撤销。
+        await _cacheWriteGate.WaitAsync();
+        try
+        {
+            await _cacheStore.RemoveAsync(key);
+            _memoryCache.Remove(key);
+        }
+        finally
+        {
+            _cacheWriteGate.Release();
+        }
+        return await LoadAsync(query, generation, cancellationToken);
     }
 
     // 缓存内部身份，不使用会随会话变化的曲目 revision，也不与自动匹配缓存混用。

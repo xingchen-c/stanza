@@ -1,118 +1,76 @@
 # Stanza
 
-在 Windows 任务栏实时显示系统媒体播放器歌词的轻量小组件——透明、点击穿透、歌词优先。QQ 音乐桌面版已实机适配；网易云音乐已有独立 SMTC 策略和 AUMID 识别，完整时序仍在继续验收；其他标准 SMTC 播放器走通用策略。
+Windows 11 任务栏上的轻量歌词小组件。通过系统媒体会话（SMTC）获取当前播放，显示同步歌词、逐字卡拉 OK、中文翻译、封面和播放控制。
 
-通过系统媒体会话（SMTC）监听当前播放，逐行同步歌词，支持卡拉 OK 式双色进度（已播放/未播放逐字揭晓）、非中文歌中文翻译、长歌词跟随滚动。
+保持透明、点击穿透、歌词优先；当前优先维护 QQ 音乐桌面版的播放体验。
 
-> **Stanza**（诗的一节 / 歌词的一段）：名字取「歌词的最小结构单位」，也为后续从「歌词卡片」长成「任务栏音乐中心」留足空间。
+[下载最新版](https://github.com/xingchen-c/stanza/releases/latest) · [GitHub](https://github.com/xingchen-c/stanza) · [Gitee](https://gitee.com/xing-chen-d/stanza) · [开发文档](doc/README.md)
 
-仓库：<https://gitee.com/xing-chen-d/stanza>
+> **Stanza** 意为诗的一节、歌词的一段。
 
 ## 功能
 
-- **任务栏歌词卡片**：支持多显示器；定位可选「贴 FluentFlyout 组件」或「独立定位（不依赖外部组件）」
-- **播放器接入**：自动选择 Windows SMTC 会话；QQ 音乐、网易云音乐有独立来源策略，未知播放器使用 Generic 策略
-- **歌词获取**：QQ 音乐优先（逐字 QRC）、网易云音乐兜底（逐字 YRC）、LRCLIB 最后兜底，逐行同步
-- **翻译**：非中文歌自动显示 QQ 提供的中文翻译（正词 + 翻译双行显示）
-- **卡拉 OK 进度**：已播放部分亮色、未播放部分暗色，逐字跟随演唱节奏推进；长歌词跟随滚动
-- **媒体控制**：鼠标悬停呼出「封面 + 歌名/歌手 + 播放控制」，支持手动选择歌词版本（记住选择）
-- **体验细节**：切歌不残留旧歌词、拖动进度条不误触切歌、暂停隐藏可配置、全屏游戏/视频自动隐藏、歌词缓存（内存 + 磁盘）
-- **设置**：字号 / 歌词颜色 / 歌词偏移 / 歌词栏宽度 / 任务栏定位（白名单 + 放置方向）/ 显示封面与播放控制 / 暂停时隐藏卡片 / 点击穿透 / 开机自启（JSON 持久化）
-- **托盘**：显示 / 隐藏、设置、打开日志目录、清除歌词缓存、歌词选择、调整位置、退出；单实例保护
-
-## 环境要求
-
-- Windows 11（Windows 10 未实测）
-- QQ 音乐桌面版：请在设置中开启「系统媒体传输控制（SMTC）」
-- 网易云音乐桌面版：已接入专用播放源策略；由于各版本 SMTC 事件质量不同，暂停恢复和切歌仍在持续实机验收，seek 尚未支持
-- 其他播放器：需发布标准 SMTC 会话；目前只保证通用链路可用，尚未逐一完成实机验收
-- [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)（框架依赖版需要；自包含包无需安装）
+- **同步歌词**：逐行显示、逐字双色进度、长歌词跟随滚动；非中文歌可显示中文翻译。
+- **多源匹配**：QQ 音乐、网易云音乐、LRCLIB 并行搜索候选，统一排序后取词；支持手动换版本、记住选择和歌词缓存。
+- **单曲纠错**：单独调整本曲歌词快慢，或清除本曲手选记忆并恢复自动匹配。
+- **悬停控制**：显示封面、歌名和歌手，提供上一首、播放 / 暂停、下一首与歌词选择入口。
+- **任务栏定位**：支持多显示器、独立定位、贴靠 FluentFlyout，以及拖动微调。
+- **显隐与交互**：点击穿透、暂停时隐藏、全屏自动隐藏、托盘显示 / 隐藏。
+- **外观与偏好**：字号、颜色、歌词栏宽度、全局歌词偏移、动画速度、渲染兼容模式和开机自启。
 
 ## 安装与使用
 
-1. 从 [Gitee Releases](https://gitee.com/xing-chen-d/stanza/releases) 页下载最新的 zip 包并解压
-2. 运行 `Stanza.exe`，歌词卡片出现在任务栏
-3. 托盘右键菜单可「显示 / 隐藏」「设置」「退出」
+面向 **Windows 11 x64**，Windows 10 未实测。从 [GitHub Releases](https://github.com/xingchen-c/stanza/releases) 下载程序包；每个包都有对应的 `.sha256` 校验文件。
 
-> 首次使用建议先播放一首歌，确认播放器已发布 SMTC；暂停播放时卡片会自动隐藏。
-
-## 从源码构建
-
-需安装 .NET 10 SDK（LTS）。`global.json` 允许稳定版 10.0 的功能带与补丁升级，不会自动选用 .NET 11。在仓库根目录（含 `Stanza.slnx` 的那层）执行：
-
-```powershell
-# 框架依赖版（需 .NET 10 Desktop Runtime，体积小）
-dotnet publish Stanza/Stanza.csproj -c Release --self-contained false -o ../dist/release
-
-# 自包含 portable ZIP + SHA256（需 PowerShell 7；版本从主项目读取）
-./scripts/Package.ps1
-
-# 额外生成自包含安装包（需 Inno Setup 6/7，iscc 在 PATH）
-./scripts/Package.ps1 -Installer
-
-# 同时生成四种包及各自的 SHA256
-./scripts/Package.ps1 -Deployment All -Installer
-
-# 只生成不带运行时的便携 ZIP
-./scripts/Package.ps1 -Deployment FrameworkDependent
-```
-
-`Deployment` 默认是 `SelfContained`（带运行时）；`FrameworkDependent` 不带运行时，`All` 同时生成两种。`-Installer` 为选中的每种模式额外生成 EXE，ZIP 和 EXE 均附带独立 SHA256 文件。
-
-打包脚本默认输出到仓库外的 `../dist`，不会更新 `dist/release`；可用 `-OutputDirectory` 指定其他输出目录。portable 是程序免安装版；数据目录可通过 `STANZA_DATA_DIR` 指定，未设置时使用 `%APPDATA%\Stanza`。相同版本的输出已存在时脚本会停止，不覆盖旧包。
-
-## 版本与发布约定
-
-- 使用 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。在 `0.x` 阶段，小修复或随包运行时更新递增修订号，功能新增或较大改进递增次版本号；使用与升级约定稳定后进入 `1.0.0`。
-- **唯一版本来源是 `Stanza/Stanza.csproj` 的 `<Version>`**。只修改这一处；不要修改第三方依赖自身的版本号来同步应用版本。预发布使用 `-alpha.N`、`-beta.N` 或 `-rc.N`。
-- 设置页展示产品版本（保留预发布后缀）；日志、崩溃报告保留完整信息版本和 SDK 自动附加的 Git 提交号。Windows 数字文件版本不包含预发布后缀。
-- 打包脚本读取项目版本，并将同一版本用于 portable ZIP、SHA256、安装包和安装器元信息；`Stanza.iss` 不再手填版本。
-- 正式发布前先提交并通过构建、回归及包验收，再创建 `v<Version>` 标签；GitHub/Gitee 的 Release 使用同一标签及同一份附件，不把平台自动生成的源码 ZIP 当成程序包。
-- 已公开的版本内容不可替换；即使只修复打包遗漏或更新内置运行时，也递增版本后重新发布。Git 构建信息不代替可排序的版本号。
-- Release 和未来的 Scoop 清单应与项目版本、下载文件名、SHA256 一致。GitHub Release 由标签触发的工作流创建；Gitee 附件同步与 Scoop 清单更新尚未接入，预发布不进入默认稳定版清单。
-
-以 `0.3.1` 为例，对应标签 `v0.3.1`。带运行时包保持原文件名，不带运行时包增加 `-no-runtime` 后缀。发布或 CI 打包时传入标签做一致性检查：
-
-```powershell
-./scripts/Package.ps1 -ReleaseTag v0.3.1 -Deployment All -Installer
-```
-
-`-ReleaseTag` 只校验传入的标签名称，不创建、推送或验证远程标签。脚本也不会创建 Release、提交或推送代码。
-
-### GitHub 自动发布
-
-[发布工作流](.github/workflows/release.yml) 在推送 `v*` 标签时执行。标签所指的提交必须包含这份工作流，以及本次准备发布的代码；仅推送分支不会发布版本。
-
-工作流使用 Windows runner 和 .NET 10 SDK，依次校验标签与项目版本、构建 Release、运行测试，安装 Inno Setup，再调用 `scripts/Package.ps1 -Deployment All -Installer` 生成四种 Windows x64 程序包和 SHA256。测试数据自动隔离到临时目录。任何一步失败都会停止，后续不发布；现有同名 Release 不会被覆盖。
-
-发布使用 GitHub 内置的 `GITHUB_TOKEN`，工作流已声明 `contents: write`，无需额外创建个人令牌。仓库需允许 GitHub Actions 运行。带 `alpha` / `beta` / `rc` 后缀的版本会标记为预发布。
-
-发布前先提交需要发布的源码。下面以项目版本 `0.3.1` 为例，命令在仓库根目录执行；`github` 是本仓库配置的 GitHub 远程名：
-
-```powershell
-git push github master
-git tag -a v0.3.1 -m "Stanza v0.3.1"
-git push github v0.3.1
-```
-
-推送标签后，在仓库的 [Actions](https://github.com/xingchen-c/stanza/actions) 页面查看 `Release` 工作流。成功后，[Releases](https://github.com/xingchen-c/stanza/releases) 会提供：
-
-| 文件 | 是否自带运行时 | 使用方式 |
+| 程序包 | 自带 .NET 运行时 | 使用方式 |
 | --- | --- | --- |
-| `Stanza-0.3.1-win-x64-portable.zip` | 是 | 完整解压后运行，Scoop 默认使用此包 |
-| `Stanza-0.3.1-win-x64-portable-no-runtime.zip` | 否 | 需预装 .NET 10 Desktop Runtime（x64） |
-| `Stanza-0.3.1-setup.exe` | 是 | 安装后运行 |
-| `Stanza-0.3.1-setup-no-runtime.exe` | 否 | 安装前检测运行时，缺少时提示打开官方下载页 |
+| `Stanza-<版本>-win-x64-portable.zip` | 是 | 完整解压后运行 `Stanza.exe` |
+| `Stanza-<版本>-setup.exe` | 是 | 运行安装器 |
+| `Stanza-<版本>-win-x64-portable-no-runtime.zip` | 否 | 安装运行时后，完整解压运行 |
+| `Stanza-<版本>-setup-no-runtime.exe` | 否 | 安装器会检测运行时，缺少时提示下载 |
 
-每个文件另附同名 `.sha256` 校验文件。不带运行时的安装器会按 x64 apphost 的顺序检查 `DOTNET_ROOT_X64`、`DOTNET_ROOT`，再检查注册表和默认位置；普通 .NET Runtime 不包含 WPF，不能替代 Desktop Runtime。下一次发布先修改项目版本并提交，再推送对应的新标签，不复用已经发布的标签。
+不带运行时的包需要 [.NET 10 Desktop Runtime（Windows x64）](https://dotnet.microsoft.com/download/dotnet/10.0)。普通 .NET Runtime 不包含 WPF，不能替代 Desktop Runtime。不要只提取 EXE 或删除随包 DLL；Release 页面中的源码压缩包不能直接运行。
 
-## 配置
+1. 在播放器中播放一首歌；QQ 音乐需先开启「系统媒体传输控制（SMTC）」。
+2. 启动 Stanza，歌词卡片会定位到任务栏。
+3. 鼠标悬停查看歌曲与播放控制；托盘右键可打开设置、选择歌词、调整位置或退出。
 
-在启动前设置环境变量 `STANZA_DATA_DIR`，可统一指定设置、歌词数据库和日志的位置。支持绝对路径和环境变量展开；相对路径以程序所在目录为基准，进程启动后不再切换目录。未设置或值为空白时，沿用普通安装的默认目录 `%APPDATA%\Stanza`。
+默认暂停时隐藏卡片，可在设置中关闭。升级前先从托盘退出 Stanza；Scoop 安装由独立 bucket 维护，更新进度取决于对应清单。
 
-数据目录内包含 `settings.json`、歌词缓存与手动选择记忆共用的 `stanza.db`，以及 `logs/`。删除 `settings.json` 可恢复默认设置。目录内的旧版 `lyrics-cache.json` / `lyrics-choice.json` 会在首次启动时迁移并改名为 `.migrated`。
+## 播放器与歌词来源
 
-Scoop 清单可使用以下配置，让程序数据保存在实际 Scoop 根目录下的 `persist/stanza/data`，升级时继续保留；完整清单由各自的 bucket 维护：
+| 播放器 | 当前支持范围 |
+| --- | --- |
+| QQ 音乐桌面版 | 主要适配与维护对象，需开启 SMTC |
+| 网易云音乐桌面版 | 已有独立策略和来源识别；完整暂停恢复、切歌与封面时序仍待验收，新增适配暂缓 |
+| 其他 SMTC 播放器 | 使用通用策略，尚未逐一完成实机验收 |
+
+**播放器和歌词来源相互独立。** QQ 音乐播放的歌曲也可以使用网易云或 LRCLIB 的歌词。当前会并行搜索三个词源的候选，统一比较歌名、歌手、版本和时长，再按候选获取歌词；同平台偏好只在匹配证据接近时生效。QQ 的 QRC 和网易云的 YRC 可提供逐字时间轴。
+
+匹配结果不合适时，可从悬停面板或托盘打开「歌词选择」，更换版本并记住选择；“显示其他歌手的同名版本”只放宽歌手条件。当前支持跟随播放器外部拖动后的进度，尚未提供主动拖动播放进度的功能。
+
+## 配置与数据
+
+默认数据目录为 `%APPDATA%\Stanza`：
+
+| 内容 | 用途 |
+| --- | --- |
+| `settings.json` | 外观、全局歌词偏移、定位与其他偏好；删除可恢复默认设置 |
+| `stanza.db` | 歌词缓存、手动选择记忆与单曲歌词偏移 |
+| `logs/` | 运行日志，可从托盘直接打开 |
+
+### 自定义数据目录
+
+启动前设置 `STANZA_DATA_DIR`，可统一指定设置、数据库和日志的位置。支持绝对路径和环境变量展开；相对路径以程序目录为基准，运行中不切换目录。
+
+例如，仅为当前 PowerShell 会话指定：
+
+```powershell
+$env:STANZA_DATA_DIR = 'D:\StanzaData'
+.\Stanza.exe
+```
+
+portable 表示程序免安装，默认仍使用 AppData 保存数据。Scoop 清单可通过以下片段将数据保存在实际 Scoop 根目录下的 `persist/stanza/data`，升级时继续保留：
 
 ```json
 {
@@ -123,28 +81,104 @@ Scoop 清单可使用以下配置，让程序数据保存在实际 Scoop 根目�
 }
 ```
 
-普通启动也可按需指定，例如只为当前 PowerShell 会话设置：
-
-```powershell
-$env:STANZA_DATA_DIR = 'D:\StanzaData'
-.\Stanza.exe
-```
-
-指定新目录后不会自动导入 `%APPDATA%\Stanza` 或 `%APPDATA%\FluentLyrics`。如需沿用旧数据，先从托盘退出 Stanza，再把原数据目录的内容复制到新目录；迁移完成前保留原文件。未指定外部目录时，旧 FluentLyrics 目录的自动迁移仍然有效。
+指定新目录不会自动导入旧 AppData 数据。如需迁移，先退出 Stanza，再复制原数据目录内容并保留原文件。未指定外部目录时，保留旧 `%APPDATA%\FluentLyrics` 自动迁移；选定目录内的旧歌词 JSON 会在首次启动时迁移并改名为 `.migrated`。
 
 ## 常见问题
 
 **任务栏没有出现歌词卡片？**
 
-确认播放器正在播放，并且 QQ 音乐已开启「系统媒体传输控制（SMTC）」。网易云音乐应发布标准 SMTC 会话；其他播放器也需要自行支持并发布标准 SMTC 会话。
+确认播放器正在播放且已发布 SMTC，会话暂停时卡片默认隐藏。检查托盘是否手动隐藏、设置中的定位选项和卡片是否位于其他显示器；前台全屏时也会自动隐藏。
 
-**显示「未找到歌词」或「纯音乐」？**
+**显示「未找到歌词」「纯音乐」，或歌词版本不对？**
 
-自动匹配未找到可用歌词；可通过托盘「歌词选择…」手动挑选其他版本（选中后会自动记住）。
+打开「歌词选择」重搜或手动挑选版本。成功选择后会记住该曲目的版本，后续优先使用。
 
-**需要额外安装什么？**
+如需撤销本曲手选，点击「恢复本曲自动匹配」；会清除本曲手选记忆并重新取词，不影响其他歌曲，也保留本曲偏移。
 
-自包含 portable ZIP（`*-portable.zip`）完整解压后免安装运行；框架依赖包需要安装 .NET 10 Desktop Runtime。
+**歌词整体快了或慢了？**
+
+在设置中调整「歌词偏移」会对所有歌曲生效。只想修正当前歌曲时，打开「歌词选择」，用「提前 / 延后 100 ms」调整本曲偏移，范围为 ±10 秒，可随时归零。
+
+单曲偏移即时保存，与全局偏移叠加；正数表示提前显示，负数表示延后显示。歌曲按播放器提供的歌名和歌手识别，之后播放同一曲目时继续生效。
+
+**「清除歌词缓存」会清掉什么？**
+
+托盘中的此操作会同时清除歌词内容缓存和所有歌曲的手动选择记忆，保留单曲偏移。
+
+## 当前架构
+
+```mermaid
+flowchart TB
+    SMTC["Windows 媒体会话"] --> Selector["会话枚举与选择<br/>SmtcSessionSelector"]
+    Selector --> Playback["会话事件与播放编排<br/>SmtcSessionService"]
+    Playback <--> Timing["播放器策略、切歌状态机<br/>位置追踪、封面管线"]
+    Playback <--> Lyrics["歌词协调与当前歌词<br/>LyricsCoordinator / LyricsService"]
+    Lyrics --> Decision["多源搜索、统一排序<br/>置信判断、按候选取词"]
+    Decision <--> Providers["QQ / 网易云 / LRCLIB"]
+    Lyrics <--> Storage["SQLite<br/>歌词缓存、手选记忆、单曲偏移"]
+    Playback <--> Storage
+    Playback <--> UI["主卡片、选词窗口、渲染"]
+    Desktop["任务栏定位、全屏检测<br/>DPI、点击穿透"] --> UI
+```
+
+主界面使用 WPF，WinForms 仅用于托盘。`AppServices` 创建数据库、缓存、选择记忆与单曲偏移存储；`MainWindow` 与 `SmtcSessionService` 显式装配播放和歌词服务，无 DI 框架或运行期插件。SMTC 事件通过 Dispatcher 回到 UI 线程，界面定时采样播放位置，叠加全局与单曲偏移后驱动歌词行与逐字进度。
+
+更详细的职责、请求失效保护和回归约束见 [架构交接](doc/HANDOVER.md)；匹配规则见 [歌词候选决策](doc/MATCH-SCORING.md)，后续方向见 [路线图](doc/ROADMAP.md)。
+
+## 开发与构建
+
+需要 **.NET 10 SDK（LTS）**。`global.json` 允许稳定版 10.0 的功能带与补丁升级，不跨主版本。在仓库根目录（含 `Stanza.slnx` 的那层）执行：
+
+```powershell
+dotnet --version
+dotnet build Stanza.slnx -c Release
+dotnet test Stanza.slnx -c Release --no-build
+
+# 发布框架依赖版，需 .NET 10 Desktop Runtime
+dotnet publish Stanza/Stanza.csproj -c Release --self-contained false -o ../dist/release
+```
+
+测试在初始化前将数据目录隔离到临时目录。构建与测试结果、实机验收边界见 [开发文档索引](doc/README.md#最近验证基线)。本机发布固定使用 `../dist/release`；覆盖前先退出正在运行的 Stanza。
+
+### 打包
+
+需要 PowerShell 7；生成安装包还需要 Inno Setup 6/7，并将 `iscc` 放入 PATH。
+
+```powershell
+# 自包含 portable ZIP 与 SHA256
+./scripts/Package.ps1
+
+# 仅生成不带运行时的 portable ZIP 与 SHA256
+./scripts/Package.ps1 -Deployment FrameworkDependent
+
+# 带 / 不带运行时的 ZIP、安装包及各自的 SHA256
+./scripts/Package.ps1 -Deployment All -Installer
+```
+
+`Deployment` 默认为 `SelfContained`；`-Installer` 为选中的每种模式额外生成 EXE。版本从项目文件读取，默认输出到仓库外的 `../dist`，可用 `-OutputDirectory` 指定其他目录。脚本拒绝覆盖已有版本的输出，也不会更新 `dist/release`。
+
+## 版本与发布约定
+
+- 使用 [语义化版本](https://semver.org/lang/zh-CN/)；`0.x` 阶段小修复递增修订号，功能新增或较大改进递增次版本号。预发布使用 `-alpha.N`、`-beta.N` 或 `-rc.N`。
+- **唯一版本来源为 `Stanza/Stanza.csproj` 的 `<Version>`**。设置页保留产品版本和预发布后缀；日志保留完整信息版本及 SDK 附加的 Git 提交号。打包脚本自动同步程序包和安装器版本。
+- 正式发布前先提交源码，通过构建、回归和包验收，再创建 `v<Version>` 标签；已公开版本不替换内容，修复后使用新版本号。
+- GitHub / Gitee Release 使用相同标签及附件；Scoop 清单需与版本、文件名和 SHA256 一致。Gitee 附件同步和独立 Scoop bucket 更新未接入应用发布流程，预发布不进入默认稳定版清单。
+
+### GitHub 自动发布
+
+[发布工作流](.github/workflows/release.yml) 在推送 `v*` 标签后，校验版本、构建、测试并生成四种 Windows x64 程序包及 SHA256，最后创建 Release。任一步失败都会停止，已有同名 Release 不会被覆盖。工作流使用内置 `GITHUB_TOKEN`，仓库需允许 GitHub Actions 运行；预发布版本会标记为预发布。
+
+下面以待发布版本 `0.3.6` 为例，实际执行时应使用项目中尚未发布的版本。先修改版本并提交源码，再在仓库根运行；`github` 是本仓库的 GitHub 远程名：
+
+```powershell
+git push github master
+git tag -a v0.3.6 -m "Stanza v0.3.6"
+git push github v0.3.6
+```
+
+标签所指提交必须包含工作流与待发布源码，仅推送分支不会发版。可在 [Actions](https://github.com/xingchen-c/stanza/actions) 查看进度，从 [Releases](https://github.com/xingchen-c/stanza/releases) 获取附件。
+
+本地打包也可传 `-ReleaseTag v0.3.6` 校验标签名称与项目版本一致；此参数不创建、推送或验证远程标签，脚本也不提交代码或创建 Release。
 
 ## 许可证
 

@@ -297,6 +297,7 @@ public class LyricsSelectionTests
         public Dictionary<string, LyricsCacheHit> Items { get; } = [];
         public void Initialize() { }
         public void Clear() => Items.Clear();
+        public void Remove(string key) => Items.Remove(key);
         public bool TryGet(string key, out LyricsLoadResult status, out List<LyricLine> lines)
         {
             var found = Items.TryGetValue(key, out var hit);

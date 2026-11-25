@@ -85,7 +85,8 @@ public partial class MainWindow
         _smtc = new SmtcSessionService(
             Dispatcher,
             services.LyricsCache,
-            services.LyricsChoices);
+            services.LyricsChoices,
+            services.LyricsOffsets);
         _clickThrough = _settings.ClickThrough;
         _showMediaControls = _settings.ShowMediaControls;
         ApplyLyricAppearance();
@@ -342,7 +343,10 @@ public partial class MainWindow
             context,
             _smtc.GetLyricCandidatesAsync,
             _smtc.ApplyLyricCandidateAsync,
-            _smtc.IsLyricsSelectionCurrent)
+            _smtc.IsLyricsSelectionCurrent,
+            _smtc.GetLyricOffset(context),
+            _smtc.SetLyricOffset,
+            _smtc.RestoreAutomaticLyricsAsync)
         {
             Owner = this
         };
@@ -361,7 +365,7 @@ public partial class MainWindow
     {
         var available = _smtc.CreateLyricsSelectionContext() is not null;
         SwitchVersionButton.IsEnabled = available;
-        SwitchVersionButton.ToolTip = available ? "换歌词版本" : "暂无可选择歌词的曲目";
+        SwitchVersionButton.ToolTip = available ? "选择歌词 / 调整本曲偏移" : "暂无可选择歌词的曲目";
         _lyricsPicker?.RefreshTrackContext();
     }
 
@@ -928,8 +932,8 @@ public partial class MainWindow
 
         _lastSkipReason = null;
 
-        // 全局歌词偏移（用户偏好，渲染层叠加，不属于位置真相）：正数 = 歌词提前显示
-        var positionMs = Math.Max(0, sample.PositionMs + _settings.LyricOffsetMs);
+        // 用户偏移仅叠加到渲染位置，不改变播放器位置：正数 = 歌词提前显示。
+        var positionMs = Math.Max(0, sample.PositionMs + _settings.LyricOffsetMs + _smtc.CurrentLyricOffsetMs);
 
         // 等待新歌歌词时不渲染，占位由 StatusChanged 事件驱动
         if (_smtc.IsSwitchingTrack)

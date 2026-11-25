@@ -20,7 +20,7 @@ Stanza 是 Windows 11 任务栏上的轻量歌词小组件，基于 SMTC 获取�
 | 位置 | 当前职责 |
 | --- | --- |
 | `Stanza/App.xaml.cs` | 启动、旧数据目录迁移、单实例、异常兜底 |
-| `Stanza/AppServices.cs` | 创建数据库、缓存和选择记忆；数据库不可用时回退内存实现 |
+| `Stanza/AppServices.cs` | 创建数据库、缓存、选择记忆和单曲偏移；数据库不可用时回退内存实现 |
 | `Stanza/Models/` | `NowPlaying`、`LyricsQuery`、`LyricsSelectionContext`、歌词行、候选与设置 |
 | `Stanza/Services/SmtcSessionSelector.cs` | SMTC 管理器、会话枚举、来源筛选和选择；不转发媒体事件 |
 | `Stanza/Services/SmtcSessionService.cs` | 直接订阅选中会话；编排播放状态、曲目、歌词、封面与控制 |
@@ -32,7 +32,7 @@ Stanza 是 Windows 11 任务栏上的轻量歌词小组件，基于 SMTC 获取�
 | `Stanza/Interop/NativeMethods.cs` | Win32 / GDI / DWM P/Invoke 入口 |
 | `Stanza/MainWindow.xaml.cs` | 窗口事件中枢、显隐、定位、交互及渲染驱动，仍较重 |
 | `Stanza/MainWindow.Rendering.cs` | 逐字裁剪、翻译、长歌词跟随滚动 |
-| `Stanza/LyricsPickerWindow.xaml(.cs)` | 异步候选选择、取消/重搜、曲目上下文失效与应用反馈 |
+| `Stanza/LyricsPickerWindow.xaml(.cs)` | 异步候选选择、取消/重搜、单曲偏移、恢复自动匹配与曲目上下文失效 |
 | `Stanza/SettingsWindow.xaml(.cs)` / `SettingsViewModel.cs` | 设置界面、草稿、校验与保存 |
 | `Stanza.Tests/` | 匹配、播放纯逻辑、请求身份、歌词并发、设置与存储测试 |
 
@@ -70,6 +70,10 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 
 选择窗口立即显示加载态、单实例打开；关闭取消等待，失败可重试，成功才关闭。窗口已设 `Topmost` 和主窗口 `Owner`。
 
+「恢复本曲自动匹配」移除当前曲目的手选记忆，开启新 generation，并串行删除当前查询的内存/SQLite 自动缓存后重新加载。清除排在已开始的缓存写入之后；同曲旧请求不能回写选择记忆或自动缓存。关闭选择窗口后，已接受的清除继续完成，必要时恢复同曲后台加载。
+
+本曲偏移按 `TrackKey` 保存，在服务入口校验曲目 revision 和 ±10 秒范围。渲染时叠加全局偏移与单曲偏移，不改变播放器位置；切歌后读取新歌偏移。
+
 ## 5. 必须保留的回归约束
 
 这些约束提炼自历史修复，不依赖本地长篇工单：
@@ -82,6 +86,7 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 | 请求身份 | 旧会话、旧元数据回包不能改变当前曲目；不能只靠歌词 generation | `MediaRequestTests` |
 | 歌词并发 | 手选优先；失败或取消后可恢复同曲自动加载；迟到请求不得修改新歌显示、状态或选择记忆 | `LyricsGenerationTests`、`LyricsSelectionTests` |
 | 缓存 | 记忆候选先查专用缓存；不能把旧普通缓存当成该候选的歌词 | `LyricsSelectionTests`、`SqliteStorageTests` |
+| 单曲纠错 | 恢复自动匹配只清本曲绑定及当前查询自动缓存；旧回包不能复活手选；单曲偏移重启保留，清缓存不清偏移 | `LyricsCorrectionTests`、`SqliteStorageTests` |
 | 纯音乐 | 解析失败不等于纯音乐；误选纯音乐不持久记忆，避免阻断后续匹配 | `QqMusicMatchingTests`、`LyricsSelectionTests` |
 | 位置 | SMTC Position 是 LastUpdatedTime 时刻的快照；位置回退不等于切歌 | `PlaybackSourceTests` |
 | 恢复边界 | 恢复不应清掉仍有效的切歌闸门；新歌未确认时不能错误重置墙钟位置 | `PlaybackSourceTests` |
@@ -112,9 +117,10 @@ Dispatcher ticker → SamplePlayback → GetLineIndexAt → 卡拉 OK 进度
 
 用户数据由 `AppDataPaths` 统一定位：启动前设置 `STANZA_DATA_DIR`，未设置时默认 `%APPDATA%\Stanza`；内含 `settings.json`、`stanza.db`、`logs/`。Scoop 清单通过 `persist` 和 `env_set` 指向 `persist/stanza/data`。旧 JSON 只在选定目录内迁移；外部指定目录不会隐式导入 AppData，默认模式保留旧 FluentLyrics 目录迁移。
 
-- `LocalDatabase`、缓存和选择记忆是实例对象，由 `AppServices` 持有；不要新增全局静态存储。
+- `LocalDatabase`、缓存、选择记忆和单曲偏移是实例对象，由 `AppServices` 持有；不要新增全局静态存储。
 - `AppLog` 与 `AppSettingsService` 保持静态。日志用 `AppLog`，关键决策 Info、诊断 Debug。
-- SQLite 共用 `lyrics_cache` / `lyrics_choice`，WAL；`synchronous=NORMAL` 和 `busy_timeout=3000` 需在连接层正确应用。
+- SQLite 共用 `lyrics_cache` / `lyrics_choice` / `lyrics_offset`，WAL；`synchronous=NORMAL` 和 `busy_timeout=3000` 需在连接层正确应用。
+- `lyrics_offset` 是用户配置，不随清缓存或选择记忆淘汰；归零时删除对应记录。启动读入内存，ticker 不做数据库 IO；数据库不可用时仅保留本次运行的偏移。
 - 自动缓存按算法版本和查询指纹区分，并存储候选决策证据；手选使用候选专用缓存，旧普通缓存不混用，详见 [匹配文档](./MATCH-SCORING.md)。
 - 真实 `AppLog` 初始化会创建目录并清理旧日志。测试程序集现通过模块初始化器，在业务静态服务初始化前将 `STANZA_DATA_DIR` 指向独立临时目录，并清除单文件覆盖变量；测试运行真实存储和日志实现。新增独立探针仍需显式规划数据目录，不能依赖测试程序集替它隔离。
 

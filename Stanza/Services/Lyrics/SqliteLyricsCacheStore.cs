@@ -132,6 +132,19 @@ public sealed class SqliteLyricsCacheStore : ILyricsCacheStore
         }
     }
 
+    public void Remove(string key)
+    {
+        lock (_gate)
+        {
+            EnsureLegacyMigrated();
+            using var connection = _database.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM lyrics_cache WHERE key = $key;";
+            command.Parameters.AddWithValue("$key", key);
+            command.ExecuteNonQuery();
+        }
+    }
+
     /// <summary>清空 SQLite 歌词缓存。</summary>
     public void Clear()
     {

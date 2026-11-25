@@ -52,6 +52,8 @@ internal sealed class LyricsMemoryCache
 
     public void Clear() => _items.Clear();
 
+    public void Remove(string key) => _items.Remove(key);
+
     private sealed class Entry
     {
         public LyricsLoadResult Status;
