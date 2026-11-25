@@ -72,12 +72,8 @@ public sealed class NeteaseLyricsProvider : ILyricsProvider
             if (parsed.Count > 0)
                 return new LyricsResult(LyricsLoadResult.Loaded, parsed);
 
-            // 有歌词原文但解析不出时间轴 → 可能是未知格式，交给下一个源，不误判纯音乐
-            var hasRaw = !string.IsNullOrWhiteSpace(lyric.Lrc?.Lyric) ||
-                         !string.IsNullOrWhiteSpace(lyric.Yrc?.Lyric);
-            return new LyricsResult(
-                hasRaw ? LyricsLoadResult.NotFound : LyricsLoadResult.Instrumental,
-                []);
+            // 未收录、空响应或无法解析都不能证明是纯音乐；只有上面的官方标记可以。
+            return new LyricsResult(LyricsLoadResult.NotFound, []);
         }
         catch (Exception ex)
         {

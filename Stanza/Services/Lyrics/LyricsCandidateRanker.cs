@@ -12,7 +12,7 @@ namespace Stanza.Services.Lyrics;
 /// <summary>自动与手动共用的元数据比较；来源偏好不参与匹配分。</summary>
 internal static class LyricsCandidateRanker
 {
-    internal const int AlgorithmVersion = 2;
+    internal const int AlgorithmVersion = 3;
     private static readonly char[] ArtistSeparators = ['/', ',', '，', '、', '&', ';', '；'];
     private static readonly Regex VersionTags = new(
         @"\blive(?:\s*version)?\b|现场版?|\bremix\b|混音版?|伴奏版?|纯音乐|\binstrumental\b|\boff\s*vocal\b|剧情版|\bremaster(?:ed)?\b(?:\s*\d{4})?",
@@ -53,7 +53,8 @@ internal static class LyricsCandidateRanker
     {
         var metadata = new TrackMetadata
         {
-            Title = query.Title, Artist = query.Artist, Album = query.Album, DurationMs = query.DurationMs
+            Title = query.Title, Artist = string.Join(", ", SplitArtists(query.Artist)),
+            Album = query.Album, DurationMs = query.DurationMs
         };
         var result = new CandidateMetadata(candidate);
         var match = CompareHelper.CompareTrack(metadata, result);
@@ -91,17 +92,27 @@ internal static class LyricsCandidateRanker
     internal static bool SameRecording(LyricCandidate a, LyricCandidate b)
         => a.SourceKey == b.SourceKey && a.Id == b.Id ||
            VersionKey(a.Title) == VersionKey(b.Title) &&
-           QqMusicLyricsProvider.ArtistRankKey(SplitArtists(a.Artist), b.Artist) == 1 &&
+           QqMusicLyricsProvider.ArtistRankKey(SplitArtists(a.Artist), string.Join(", ", SplitArtists(b.Artist))) == 1 &&
            (a.DurationMs is { } x && b.DurationMs is { } y
                ? Math.Abs((long)x - y) <= 2000
                : !string.IsNullOrWhiteSpace(a.Album) &&
                  QqMusicLyricsProvider.Normalize(a.Album) == QqMusicLyricsProvider.Normalize(b.Album ?? ""));
 
     private static double ArtistRank(LyricCandidate c, LyricsQuery query)
-        => QqMusicLyricsProvider.ArtistRankKey(SplitArtists(c.Artist), query.Artist);
+        => QqMusicLyricsProvider.ArtistRankKey(SplitArtists(c.Artist), string.Join(", ", SplitArtists(query.Artist)));
 
     internal static string[] SplitArtists(string artist)
-        => artist.Split(ArtistSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        => artist.Split(ArtistSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(NormalizeArtistName).ToArray();
+
+    private static string NormalizeArtistName(string artist)
+    {
+        // 平台常在歌手名后追加括号别名；只归一比较值，保留查询和候选中的原始名称。
+        var open = artist.LastIndexOfAny(['(', '（']);
+        return open > 0 && artist[^1] is (')' or '）')
+            ? artist[..open].TrimEnd()
+            : artist;
+    }
 
     internal static string VersionKey(string title)
         => string.Join("|", VersionTags.Matches(title).Select(m => m.Value.ToLowerInvariant() switch
@@ -117,7 +128,7 @@ internal static class LyricsCandidateRanker
         public ISearcher Searcher => null!;
         public string Title => candidate.Title;
         public string[] Artists => SplitArtists(candidate.Artist);
-        public string Artist => candidate.Artist;
+        public string Artist => string.Join(", ", Artists);
         public string Album => candidate.Album!;
         public string[] AlbumArtists => [];
         public string AlbumArtist => string.Empty;

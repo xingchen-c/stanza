@@ -30,7 +30,14 @@ internal sealed class LyricsProviderChain
         AppLog.Info($"歌词决策: '{query.Title}' / {query.Artist} 时长={query.DurationMs?.ToString() ?? "?"}ms " +
                     $"候选={ranked.Count} 结果={decision.Status} 偏好={query.PreferredSourceKey ?? "中立"}");
         if (decision.Status != LyricsLoadResult.Loaded)
+        {
+            foreach (var candidate in ranked.Take(3))
+                AppLog.Info($"候选未自动采用: 来源={candidate.SourceKey} ID={candidate.Id} 标题='{candidate.Title}' " +
+                            $"歌手='{candidate.Artist}' 时长={candidate.DurationMs?.ToString() ?? "?"}ms " +
+                            $"等级分={candidate.MatchScore * 100:F0} 歌名匹配={candidate.TitleMatched} " +
+                            $"版本匹配={candidate.VersionMatched} 歌手匹配={candidate.ArtistMatched}");
             return new LyricsResult(decision.Status, []);
+        }
 
         var loaded = new List<LyricsResult>();
         LyricsResult? instrumental = null;

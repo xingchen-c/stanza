@@ -76,7 +76,8 @@ public class MediaInteractionTests
 
     [Theory]
     [InlineData("Perfect", "完美匹配")]
-    [InlineData("PrettyHigh", "匹配度很高")]
+    [InlineData("PrettyHigh", "匹配度较高")]
+    [InlineData("High", "匹配度高")]
     [InlineData("VeryHigh", "匹配度很高")]
     [InlineData("VERYHIGH", "匹配度很高")]
     [InlineData("VeryLow", "匹配度很低")]

@@ -1,7 +1,14 @@
 using Stanza.Models;
 using Lyricify.Lyrics.Helpers;
 using Lyricify.Lyrics.Models;
+using Lyricify.Lyrics.Providers.Web;
+using Lyricify.Lyrics.Providers.Web.QQMusic;
 using Lyricify.Lyrics.Searchers;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using System.Diagnostics;
+using System.Net.Http;
+using System.Text;
 
 namespace Stanza.Services.Lyrics;
 
@@ -15,46 +22,143 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
     public string Name => "QQ 音乐";
 
     /// <summary>
-    ///     搜索候选：SMTC 标题常带「【前缀】」「(版本后缀)」等脏标记，完整标题搜不到时
-    ///     逐级去掉再搜（如【盗墓笔记】见闻山海 (剧情版) → 见闻山海），避免 QQ 搜索被卡住。
+    ///     按有限关键词组合召回；结果非空但歌名、版本或歌手不相关时继续搜索。
+    ///     Desktop 最多占用 2 秒，为 Mobile 保留时间；提前返回，避免外层 5 秒预算丢掉部分结果。
     /// </summary>
-    private static async Task<IReadOnlyList<QQMusicSearchResult>> SearchWithTitleFallbackAsync(
-        string title, string artist, int? durationMs, string? album)
+    private async Task<IReadOnlyList<LyricCandidate>> SearchWithTitleFallbackAsync(LyricsQuery query)
     {
+        var title = query.Title;
         var variants = new List<string> { title };
         AddIfDistinct(variants, StripTrailingParenthetical(title));
         AddIfDistinct(variants, StripLeadingBracket(title));
         // 同时去掉前后缀（如【盗墓笔记】见闻山海 (剧情版) → 见闻山海）
         AddIfDistinct(variants, StripTrailingParenthetical(StripLeadingBracket(title) ?? title));
 
-        // 群星类歌曲（几十位歌手）整串歌手名会拖垮搜索，只取前两位作搜索提示；
-        // 完整歌手串仍用于后续综合打分（按分隔符求交集），不影响匹配准确率。
-        var searchArtist = ShortenArtists(artist, 2);
-
-        foreach (var variant in variants)
+        var searchArtist = ShortenArtists(query.Artist, 2)?.Replace(", ", " ") ?? string.Empty;
+        var candidates = new List<LyricCandidate>();
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        var stopwatch = Stopwatch.StartNew();
+        foreach (var mobile in new[] { false, true })
         {
-            try
+            var phaseBudget = TimeSpan.FromMilliseconds(mobile ? 4500 : 2000);
+            foreach (var keyword in SearchKeywords(variants, searchArtist, query.Album, mobile).Distinct(StringComparer.Ordinal))
             {
-                var metadata = new TrackMetadata { Title = variant, Artist = searchArtist, DurationMs = durationMs, Album = album };
-                var results = await SearcherHelper.QQMusicSearcher.SearchForResults(metadata);
-                var candidates = (results ?? []).OfType<QQMusicSearchResult>().ToList();
-                if (candidates.Count > 0)
+                var remaining = phaseBudget - stopwatch.Elapsed;
+                if (remaining <= TimeSpan.Zero)
+                    break;
+                var budget = remaining < TimeSpan.FromSeconds(1) ? remaining : TimeSpan.FromSeconds(1);
+                var results = await SearchAsync(keyword, mobile, budget);
+                var ranked = LyricsCandidateRanker.Rank(ToCandidates(results), query);
+                candidates.AddRange(ranked.Where(c => ids.Add(c.Id)));
+                var related = ranked.Count(c => c.TitleMatched == true && c.VersionMatched == true && c.ArtistMatched != false);
+                if (related > 0)
                 {
-                    if (!string.Equals(variant, title, StringComparison.Ordinal))
-                        AppLog.Info($"QQ 搜索兜底：'{title}' 搜不到，清洗标题 '{variant}' 找到 {candidates.Count} 个候选");
+                    AppLog.Info($"QQ 召回完成: '{title}' 入口={(mobile ? "Mobile" : "Desktop")} 关键词='{keyword}' " +
+                                $"候选={candidates.Count} 本轮相关={related} 耗时={stopwatch.ElapsedMilliseconds}ms");
                     return candidates;
                 }
-            }
-            catch (Exception ex)
-            {
-                AppLog.Warn($"QQ 搜索失败（标题='{variant}'）: {ex.Message}");
+                if (ranked.Count > 0)
+                    AppLog.Info($"QQ 继续召回: 关键词='{keyword}' 候选={ranked.Count} " +
+                                $"歌名不符={ranked.Count(c => c.TitleMatched == false)} " +
+                                $"版本不符={ranked.Count(c => c.VersionMatched == false)} " +
+                                $"歌手不符={ranked.Count(c => c.ArtistMatched == false)}");
             }
         }
 
-        // 所有变体都搜不到：打一条汇总，方便定位「脏标题 + 群星歌手」这类搜索被卡死的模式
-        AppLog.Info($"QQ 搜索无结果: '{title}' 歌手长={artist?.Length ?? 0} 尝试标题=[{string.Join(" → ", variants)}]");
-        return [];
+        AppLog.Info($"QQ 搜索未找到相关候选: '{title}' / {query.Artist} 保留候选={candidates.Count} " +
+                    $"耗时={stopwatch.ElapsedMilliseconds}ms 尝试标题=[{string.Join(" → ", variants)}]");
+        return candidates;
     }
+
+    private static IEnumerable<string> SearchKeywords(IEnumerable<string> variants, string artist, string? album, bool mobile)
+    {
+        foreach (var title in variants)
+        {
+            var combined = $"{title} {artist}".Replace(" - ", " ").Trim();
+            if (!mobile && !string.IsNullOrWhiteSpace(album))
+                yield return $"{combined} {album}".Replace(" - ", " ");
+            if (!mobile)
+                yield return combined;
+            yield return title;
+            if (mobile)
+                yield return combined;
+        }
+    }
+
+    private static async Task<IReadOnlyList<QQMusicSearchResult>> SearchAsync(string keyword, bool mobile, TimeSpan budget)
+    {
+        const string clientVersion = "20080508";
+        var endpoint = mobile ? "Mobile" : "Desktop";
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            // 直接读取两种响应，避免库将业务错误码吞成空列表；只设置当前请求的头。
+            var parameters = JObject.FromObject(new { query = keyword, search_type = 0,
+                num_per_page = mobile ? 30 : 20, page_num = 1 });
+            if (mobile)
+                parameters["grp"] = 1;
+            var body = new JObject
+            {
+                ["req_1"] = new JObject
+                {
+                    ["module"] = "music.search.SearchCgiService",
+                    ["method"] = mobile ? "DoSearchForQQMusicMobile" : "DoSearchForQQMusicDesktop",
+                    ["param"] = parameters
+                }
+            };
+            if (mobile)
+                body["comm"] = JObject.FromObject(new { ct = "11", v = clientVersion, tmeLoginType = "0", tmeLoginMethod = "0" });
+            using var request = new HttpRequestMessage(HttpMethod.Post,
+                $"https://{(mobile ? "u6" : "u")}.y.qq.com/cgi-bin/musicu.fcg")
+            {
+                Content = new StringContent(body.ToString(Formatting.None), Encoding.UTF8,
+                    "application/x-www-form-urlencoded")
+            };
+            request.Headers.TryAddWithoutValidation("User-Agent", mobile
+                ? $"QQMusic {clientVersion}(android)" : "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+            request.Headers.Referrer = new Uri("https://c.y.qq.com/");
+            using var cts = new CancellationTokenSource(budget);
+            using var response = await BaseApi.HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            response.EnsureSuccessStatusCode();
+            var json = JObject.Parse(await response.Content.ReadAsStringAsync(cts.Token));
+            var module = json["req_1"];
+            var data = module?["data"];
+            var code = (int?)json["code"];
+            var moduleCode = (int?)module?["code"];
+            var dataCode = (int?)data?["code"];
+            var diagnostic = $"入口={endpoint} 关键词='{keyword}' HTTP={(int)response.StatusCode} " +
+                             $"code={code} module={moduleCode} data={dataCode} 耗时={stopwatch.ElapsedMilliseconds}ms";
+            // Desktop 的合法响应可以省略 data.code；Mobile 必须完整返回三层成功码。
+            if (code != 0 || moduleCode != 0 || dataCode != 0 && (mobile || dataCode is not null))
+            {
+                AppLog.Warn($"QQ 搜索业务失败: {diagnostic}");
+                return [];
+            }
+
+            var items = mobile ? data?["body"]?["item_song"] : data?["body"]?["song"]?["list"];
+            var songs = items?.ToObject<List<Song>>() ?? [];
+            var expanded = songs.Where(song => song is not null)
+                .SelectMany(song => new[] { song }.Concat(song.Group ?? [])).ToArray();
+            var candidates = expanded
+                .Where(song => song is not null && !string.IsNullOrWhiteSpace(song.Id)
+                    && !string.IsNullOrWhiteSpace(song.Title) && (!mobile || !string.IsNullOrWhiteSpace(song.Mid)))
+                .Select(song => new QQMusicSearchResult(
+                    RemoveSearchHighlight(song.Title), (song.Singer ?? []).Select(s => RemoveSearchHighlight(s.Name)).ToArray(),
+                    RemoveSearchHighlight(song.Album?.Title ?? string.Empty), null, song.Interval * 1000, song.Id, song.Mid))
+                .ToArray();
+            AppLog.Info($"QQ 搜索响应: {diagnostic} 候选={candidates.Length} 无效条目={expanded.Length - candidates.Length}");
+            return candidates;
+        }
+        catch (Exception ex)
+        {
+            var reason = ex is OperationCanceledException ? "请求超时" : $"{ex.GetType().Name}: {ex.Message}";
+            AppLog.Warn($"QQ 搜索请求失败: 入口={endpoint} 关键词='{keyword}' 耗时={stopwatch.ElapsedMilliseconds}ms 原因={reason}");
+            return [];
+        }
+    }
+
+    private static string RemoveSearchHighlight(string text)
+        => text.Replace("<em>", "").Replace("</em>", "");
 
     /// <summary>向标题变体列表追加一个非空且不重复的清洗结果</summary>
     private static void AddIfDistinct(List<string> variants, string? cleaned)
@@ -158,15 +262,12 @@ public sealed class QqMusicLyricsProvider : ILyricsProvider
     public async Task<IReadOnlyList<LyricCandidate>> GetCandidatesAsync(LyricsQuery query)
     {
         var title = query.Title;
-        var artist = query.Artist;
-        var durationMs = query.DurationMs;
         if (string.IsNullOrWhiteSpace(title))
             return [];
 
         try
         {
-            var results = await SearchWithTitleFallbackAsync(title, artist, durationMs, query.Album);
-            return ToCandidates(results);
+            return await SearchWithTitleFallbackAsync(query);
         }
         catch (Exception ex)
         {

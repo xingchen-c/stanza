@@ -123,8 +123,9 @@ public partial class LyricsPickerWindow : Window
         return matchType?.ToLowerInvariant() switch
         {
             "perfect" => "完美匹配",
-            "prettyhigh" or "veryhigh" => "匹配度很高",
+            "veryhigh" => "匹配度很高",
             "high" => "匹配度高",
+            "prettyhigh" => "匹配度较高",
             "medium" => "匹配度中",
             "low" => "匹配度低",
             "verylow" => "匹配度很低",

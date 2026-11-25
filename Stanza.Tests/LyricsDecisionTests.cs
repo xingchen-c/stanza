@@ -150,6 +150,48 @@ public class LyricsDecisionTests
         Assert.Equal(LyricsLoadResult.Ambiguous, LyricsCandidateRanker.Decide(ranked).Status);
     }
 
+    [Theory]
+    [InlineData("Mili (ミリー)", "Mili")]
+    [InlineData("Mili（ミリー）", "Mili")]
+    [InlineData("Mili", "Mili (ミリー)")]
+    public async Task Rendezvous歌手括号别名不阻止跨源自动采用(string artist, string candidateArtist)
+    {
+        var query = new LyricsQuery("Rendezvous", artist, 208533, "Rendezvous", "QQ");
+        var candidate = new LyricCandidate("NetEase", "网易云音乐", "3442131349",
+            query.Title, candidateArtist, query.Album, 208533, null);
+        var chain = new LyricsProviderChain(new Provider("NetEase", candidate, Result("歌词")));
+
+        var ranked = await chain.GetCandidatesAsync(query);
+        var equivalent = LyricsCandidateRanker.Score(candidate with { Artist = "Mili" }, query with { Artist = "Mili" });
+        Assert.Equal(equivalent.MatchScore, Assert.Single(ranked).MatchScore);
+        var result = await chain.LoadAsync(query);
+        Assert.Equal(LyricsLoadResult.Loaded, result.Status);
+        Assert.Equal("歌词", Assert.Single(result.Lines).Text);
+        Assert.Equal(candidateArtist, result.Decision!.Candidate.Artist);
+        Assert.False(result.Decision.Candidate.PreferredSource);
+    }
+
+    [Fact]
+    public void 只有一条候选仍不能放行时长冲突()
+    {
+        var candidate = Candidate("NetEase") with { DurationMs = 244000, Album = "其它专辑" };
+        var ranked = LyricsCandidateRanker.Rank([candidate], Query);
+        Assert.Single(ranked);
+        Assert.Equal(LyricsLoadResult.Ambiguous, LyricsCandidateRanker.Decide(ranked).Status);
+    }
+
+    [Theory]
+    [InlineData("Rendezvous", "其他歌手", LyricsLoadResult.Ambiguous)]
+    [InlineData("Rendezvous (Live)", "Mili", LyricsLoadResult.NotFound)]
+    public async Task 歌手别名归一后仍不放行异歌手或不同版本(
+        string title, string artist, LyricsLoadResult expected)
+    {
+        var query = new LyricsQuery("Rendezvous", "Mili (ミリー)", 208533, "Rendezvous", "QQ");
+        var candidate = new LyricCandidate("NetEase", "网易云音乐", "1", title, artist, query.Album, 208533, null);
+        var chain = new LyricsProviderChain(new Provider("NetEase", candidate, Result("错版")));
+        Assert.Equal(expected, (await chain.LoadAsync(query)).Status);
+    }
+
     [Fact]
     public async Task 同平台标记纯音乐后仍可采用其它源的可用歌词()
     {
