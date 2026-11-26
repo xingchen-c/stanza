@@ -138,7 +138,7 @@ public class LyricsDecisionTests
             candidate with { Id = "exact", Artist = "ZWLJ, 国风引力", DurationMs = 207000 }
         ], query);
         Assert.Equal(["exact", "partial", "wrong"], ranked.Select(c => c.Id));
-        Assert.Equal(LyricsLoadResult.Ambiguous, LyricsCandidateRanker.Decide(ranked).Status);
+        Assert.Equal(LyricsLoadResult.Ambiguous, LyricsCandidateRanker.Decide(ranked, query).Status);
     }
 
     [Fact]
@@ -147,7 +147,75 @@ public class LyricsDecisionTests
         var ranked = LyricsCandidateRanker.Rank([Candidate("QQ") with { Artist = "" }], Query);
         Assert.Single(ranked);
         Assert.True(ranked[0].TitleMatched);
-        Assert.Equal(LyricsLoadResult.Ambiguous, LyricsCandidateRanker.Decide(ranked).Status);
+        Assert.Equal(LyricsLoadResult.Ambiguous, LyricsCandidateRanker.Decide(ranked, Query).Status);
+    }
+
+    [Theory]
+    [InlineData(null, "QQ")]
+    [InlineData(205263, "QQ")]
+    [InlineData(null, "NetEase")]
+    [InlineData(205263, "NetEase")]
+    public async Task 心似悬春完整歌手候选不被部分歌手的同档高分阻止(
+        int? durationMs, string preferredSource)
+    {
+        var query = new LyricsQuery("心似悬春", "喵酱油/小坠/折光组", durationMs, "心似悬春", preferredSource);
+        var qq = new LyricCandidate("QQ", "QQ 音乐", "430662886", query.Title,
+            "喵酱油, 小坠, 折光组", query.Album, 205000, null);
+        var ne = new LyricCandidate("NetEase", "网易云音乐", "2079399745", query.Title,
+            "小坠, 喵☆酱, 折光组", query.Album, 205263, null);
+        var chain = new LyricsProviderChain(
+            new Provider("NetEase", ne, Result("部分歌手")),
+            new Provider("QQ", qq, Result("完整歌手")));
+
+        var ranked = await chain.GetCandidatesAsync(query);
+        Assert.Equal(qq.Id, ranked[0].Id);
+        Assert.All(ranked, candidate =>
+        {
+            Assert.True(candidate.ArtistMatched);
+            Assert.True(candidate.MatchScore >= 0.99);
+        });
+        Assert.False(LyricsCandidateRanker.SameRecording(ranked[0], ranked[1]));
+
+        var result = await chain.LoadAsync(query);
+        Assert.Equal(LyricsLoadResult.Loaded, result.Status);
+        Assert.Equal(qq.Id, result.Decision!.Candidate.Id);
+        Assert.Equal("完整歌手", Assert.Single(result.Lines).Text);
+    }
+
+    [Theory]
+    [InlineData("喵酱油, 小坠, 折光组", "喵酱油, 小坠, 折光组")]
+    [InlineData("小坠, 喵☆酱, 折光组", "小坠, 其他歌手, 折光组")]
+    public async Task 同一歌手档的高分候选录音冲突仍保留歧义(string qqArtist, string neArtist)
+    {
+        var query = new LyricsQuery("心似悬春", "喵酱油/小坠/折光组", null, "心似悬春", "QQ");
+        var candidate = new LyricCandidate("QQ", "QQ 音乐", "qq", query.Title,
+            qqArtist, query.Album, 205000, null);
+        var chain = new LyricsProviderChain(
+            new Provider("QQ", candidate, Result("205 秒录音")),
+            new Provider("NetEase", candidate with
+            {
+                SourceKey = "NetEase", Id = "ne", Artist = neArtist, DurationMs = 220000
+            }, Result("220 秒录音")));
+
+        var ranked = await chain.GetCandidatesAsync(query);
+        Assert.All(ranked, c => Assert.True(c.MatchScore >= 0.99));
+        Assert.Equal(LyricsLoadResult.Ambiguous, (await chain.LoadAsync(query)).Status);
+    }
+
+    [Fact]
+    public async Task 完整歌手候选取词失败不把部分歌手候选当作同录音回退()
+    {
+        var query = new LyricsQuery("心似悬春", "喵酱油/小坠/折光组", 205263, "心似悬春", "QQ");
+        var candidate = new LyricCandidate("QQ", "QQ 音乐", "430662886", query.Title,
+            "喵酱油, 小坠, 折光组", query.Album, 205000, null);
+        var chain = new LyricsProviderChain(
+            new Provider("QQ", candidate, new(LyricsLoadResult.NotFound, [])),
+            new Provider("NetEase", candidate with
+            {
+                SourceKey = "NetEase", Id = "2079399745", Artist = "小坠, 喵☆酱, 折光组", DurationMs = 205263
+            }, Result("部分歌手")));
+
+        Assert.Equal(LyricsLoadResult.NotFound, (await chain.LoadAsync(query)).Status);
     }
 
     [Theory]
@@ -177,7 +245,7 @@ public class LyricsDecisionTests
         var candidate = Candidate("NetEase") with { DurationMs = 244000, Album = "其它专辑" };
         var ranked = LyricsCandidateRanker.Rank([candidate], Query);
         Assert.Single(ranked);
-        Assert.Equal(LyricsLoadResult.Ambiguous, LyricsCandidateRanker.Decide(ranked).Status);
+        Assert.Equal(LyricsLoadResult.Ambiguous, LyricsCandidateRanker.Decide(ranked, Query).Status);
     }
 
     [Theory]

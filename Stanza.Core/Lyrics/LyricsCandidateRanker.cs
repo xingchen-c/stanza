@@ -12,7 +12,7 @@ namespace Stanza.Core.Lyrics;
 /// <summary>自动与手动共用的元数据比较；来源偏好不参与匹配分。</summary>
 internal static class LyricsCandidateRanker
 {
-    internal const int AlgorithmVersion = 3;
+    internal const int AlgorithmVersion = 4;
     private static readonly char[] ArtistSeparators = ['/', ',', '，', '、', '&', ';', '；'];
     private static readonly Regex VersionTags = new(
         @"\blive(?:\s*version)?\b|现场版?|\bremix\b|混音版?|伴奏版?|纯音乐|\binstrumental\b|\boff\s*vocal\b|剧情版|\bremaster(?:ed)?\b(?:\s*\d{4})?",
@@ -69,7 +69,7 @@ internal static class LyricsCandidateRanker
         };
     }
 
-    internal static SelectionDecision Decide(IReadOnlyList<LyricCandidate> ranked)
+    internal static SelectionDecision Decide(IReadOnlyList<LyricCandidate> ranked, LyricsQuery query)
     {
         var related = ranked.Where(c => c.TitleMatched == true && c.VersionMatched == true).ToArray();
         if (related.Length == 0)
@@ -79,6 +79,9 @@ internal static class LyricsCandidateRanker
         if (matchedArtists.Length == 0)
             return new(LyricsLoadResult.Ambiguous, []);
         var best = matchedArtists[0];
+        // 歧义与回退沿用排序中的歌手档，部分匹配不能否决完整匹配的候选。
+        var bestArtistRank = ArtistRank(best, query);
+        matchedArtists = matchedArtists.Where(c => ArtistRank(c, query) == bestArtistRank).ToArray();
         if (best.MatchScore < 0.95 || matchedArtists.Skip(1).Any(c =>
                 ConfidenceBand(c) == ConfidenceBand(best) && !SameRecording(best, c)))
             return new(LyricsLoadResult.Ambiguous, []);

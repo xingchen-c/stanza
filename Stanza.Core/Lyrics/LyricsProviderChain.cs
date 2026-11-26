@@ -26,7 +26,7 @@ internal sealed class LyricsProviderChain
     {
         var stopwatch = Stopwatch.StartNew();
         var ranked = await GetCandidatesAsync(query, cancellationToken);
-        var decision = LyricsCandidateRanker.Decide(ranked);
+        var decision = LyricsCandidateRanker.Decide(ranked, query);
         AppLog.Info($"歌词决策: '{query.Title}' / {query.Artist} 时长={query.DurationMs?.ToString() ?? "?"}ms " +
                     $"候选={ranked.Count} 结果={decision.Status} 偏好={query.PreferredSourceKey ?? "中立"}");
         if (decision.Status != LyricsLoadResult.Loaded)

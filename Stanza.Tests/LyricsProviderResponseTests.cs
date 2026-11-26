@@ -55,7 +55,7 @@ public class LyricsProviderResponseTests
             Assert.Equal(id, ranked[0].Id);
             Assert.True(ranked[0].ArtistMatched);
             Assert.False(ranked[1].ArtistMatched);
-            Assert.Equal(id, Assert.Single(LyricsCandidateRanker.Decide(ranked).Candidates).Id);
+            Assert.Equal(id, Assert.Single(LyricsCandidateRanker.Decide(ranked, query).Candidates).Id);
         }
         finally
         {
@@ -183,7 +183,7 @@ public class LyricsProviderResponseTests
             Assert.Equal(2, candidates.Count);
             Assert.Contains(candidates, c => c.Id == "other");
             Assert.Equal("correct", Assert.Single(LyricsCandidateRanker.Decide(
-                LyricsCandidateRanker.Rank(candidates, query)).Candidates).Id);
+                LyricsCandidateRanker.Rank(candidates, query), query).Candidates).Id);
         }
         finally
         {
@@ -314,7 +314,7 @@ public class LyricsProviderResponseTests
                 .GetCandidatesAsync(query).WaitAsync(TimeSpan.FromSeconds(7));
             Assert.True(mobileRequested);
             Assert.Equal("other", Assert.Single(candidates).Id);
-            Assert.Equal(LyricsLoadResult.Ambiguous, LyricsCandidateRanker.Decide(candidates).Status);
+            Assert.Equal(LyricsLoadResult.Ambiguous, LyricsCandidateRanker.Decide(candidates, query).Status);
         }
         finally
         {
